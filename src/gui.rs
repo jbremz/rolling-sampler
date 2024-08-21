@@ -41,7 +41,7 @@ pub fn run_gui(is_recording: Arc<AtomicBool>, stop_flag: Arc<AtomicBool>) {
                     *control_flow = ControlFlow::ExitWithCode(0);
                 }
             }
-            Event::RedrawRequested(_) => {
+            Event::WindowEvent { event: WindowEvent::RedrawRequested, .. } => {
                 let raw_input = egui_winit_state.take_egui_input(&window);
     
                 egui_ctx.begin_frame(raw_input);
