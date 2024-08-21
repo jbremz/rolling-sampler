@@ -32,8 +32,8 @@ pub fn run_gui(is_recording: Arc<AtomicBool>, stop_flag: Arc<AtomicBool>) {
     event_loop.run(move |event, control_flow| {
         match &event {
             Event::WindowEvent { event, .. } => {
-                let redraw = egui_winit_state.on_window_event(&window, event);
-                if redraw {
+                let response = egui_winit_state.on_window_event(&window, event);
+                if response.repaint {
                     window.request_redraw();
                 }
     
