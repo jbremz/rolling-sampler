@@ -13,6 +13,7 @@ struct Recorder {
     sample_buffer: Arc<Mutex<CircularBuffer>>,
     stream: Option<cpal::Stream>,
     config: StreamConfig,
+    buffer_size: Arc<Mutex<usize>>,
 }
 
 struct CircularBuffer {
@@ -25,23 +26,24 @@ struct CircularBuffer {
 
 
 impl Recorder {
-    fn new() -> Self {
+    fn new(initial_buffer_size: usize) -> Self {
         let host = cpal::default_host();
         let input_device = host.default_input_device().expect("No input device available");
         let config = input_device.default_input_config().expect("Failed to get default input config");
         let config: StreamConfig = config.into();
 
-        let max_size = (config.sample_rate.0 * config.channels as u32 * 5) as usize; // 60 seconds worth of samples
-
         let mut recorder = Recorder {
             is_grabbing: Arc::new(AtomicBool::new(false)),
-            sample_buffer: Arc::new(Mutex::new(CircularBuffer::new(max_size))),
+            sample_buffer: Arc::new(Mutex::new(CircularBuffer::new(initial_buffer_size))),
             stream: None,
             config,
+            buffer_size: Arc::new(Mutex::new(initial_buffer_size)), // Initialize buffer size
         };
 
         // Start recording as soon as the Recorder is created
         recorder.start_recording();
+
+        println!("{}", initial_buffer_size);
 
         recorder
     }
@@ -123,6 +125,15 @@ impl Recorder {
         drop(buffer);
         self.sample_buffer.lock().unwrap().clear();
     }
+
+    fn update_buffer_size(&mut self, new_size: usize) {
+        let mut buffer_size = self.buffer_size.lock().unwrap();
+        *buffer_size = new_size;
+
+        // Update the circular buffer to the new size
+        let mut buffer = self.sample_buffer.lock().unwrap();
+        *buffer = CircularBuffer::new(new_size);
+    }
 }
 
 impl CircularBuffer {
@@ -178,6 +189,19 @@ impl App for Recorder {
 
                 ui.horizontal_centered(|ui| {
                     ui.vertical_centered(|ui| {
+                        // Slider to control buffer size
+                        let mut buffer_size = *self.buffer_size.lock().unwrap();
+                        let mut buffer_size_seconds = buffer_size as f32 / self.config.sample_rate.0 as f32;
+                        ui.add(egui::Slider::new(&mut buffer_size_seconds, 1.0..=60.0)
+                            .text("Buffer Size (s)"));
+                        let new_buffer_size = (buffer_size_seconds as f32 * self.config.sample_rate.0 as f32) as usize;
+                        if new_buffer_size != buffer_size {
+                            buffer_size = new_buffer_size;
+                            self.update_buffer_size(buffer_size);
+                        }
+
+                        ui.add_space(20.0); // Add some space between the slider and the button
+
                         // Start/Stop Recording button
                         let record_button_text = if self.is_grabbing.load(Ordering::SeqCst) {
                             "Stop Grab"
@@ -215,7 +239,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let app_name = "Recorder";
     let native_options = NativeOptions::default();
     let app_creator = move |_cc: &CreationContext| -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
-        Ok(Box::new(Recorder::new()))
+        Ok(Box::new(Recorder::new(5*44100))) // Initialize with a buffer size of 44100 samples
     };
     run_native(app_name, native_options, Box::new(app_creator))?;
     Ok(())
