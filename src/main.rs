@@ -4,7 +4,6 @@ use std::sync::Mutex;
 use eframe::{run_native, App, NativeOptions, CreationContext};
 use egui::CentralPanel;
 use std::error::Error;
-use std::thread;
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{SampleFormat, StreamConfig};
 use hound::{WavWriter, WavSpec, SampleFormat as HoundSampleFormat};
@@ -17,7 +16,6 @@ enum SampleData {
 
 struct Recorder {
     is_recording: Arc<AtomicBool>,
-    stop_flag: Arc<AtomicBool>,
     sample_buffer: Arc<Mutex<SampleData>>,
     stream: Option<cpal::Stream>,
     config: StreamConfig,
@@ -32,7 +30,6 @@ impl Recorder {
 
         Recorder {
             is_recording: Arc::new(AtomicBool::new(false)),
-            stop_flag: Arc::new(AtomicBool::new(false)),
             sample_buffer: Arc::new(Mutex::new(SampleData::F32(Vec::new()))),
             stream: None,
             config,
@@ -163,20 +160,29 @@ impl Recorder {
 impl App for Recorder {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
         CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Recorder");
-            ui.horizontal(|ui| {
-                if ui.button("Record").clicked() {
-                    println!("Record button clicked");
-                    self.start_recording();
-                }
-                if ui.button("Stop").clicked() {
-                    println!("Stop button clicked");
-                    self.stop_recording();
-                }
+            ui.vertical_centered(|ui| {
+                ui.add_space(10.0); // Add some space at the top
+                ui.heading("Recorder");
+                ui.add_space(20.0); // Add some space between the heading and buttons
+
+                ui.horizontal_centered(|ui| {
+                    ui.vertical_centered(|ui| {
+                        if ui.add_sized([100.0, 40.0], egui::Button::new("Record")).clicked() {
+                            println!("Record button clicked");
+                            self.start_recording();
+                        }
+                        if ui.add_sized([100.0, 40.0], egui::Button::new("Stop")).clicked() {
+                            println!("Stop button clicked");
+                            self.stop_recording();
+                        }
+                    });
+                });
             });
         });
-    } 
+    }
 }
+
+
 
 fn err_fn(err: cpal::StreamError) {
     eprintln!("An error occurred on the input stream: {}", err);
@@ -185,7 +191,7 @@ fn err_fn(err: cpal::StreamError) {
 fn main() -> Result<(), Box<dyn Error>> {
     let app_name = "Recorder";
     let native_options = NativeOptions::default();
-    let app_creator = move |cc: &CreationContext| -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
+    let app_creator = move |_cc: &CreationContext| -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
         Ok(Box::new(Recorder::new()))
     };
     run_native(app_name, native_options, Box::new(app_creator))?;
