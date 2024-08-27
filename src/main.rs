@@ -15,7 +15,7 @@ enum SampleData {
 }
 
 struct Recorder {
-    is_recording: Arc<AtomicBool>,
+    is_grabbing: Arc<AtomicBool>,
     sample_buffer: Arc<Mutex<CircularBuffer>>,
     stream: Option<cpal::Stream>,
     config: StreamConfig,
@@ -39,12 +39,17 @@ impl Recorder {
 
         let max_size = (config.sample_rate.0 * config.channels as u32 * 60) as usize; // 60 seconds worth of samples
 
-        Recorder {
-            is_recording: Arc::new(AtomicBool::new(false)),
+        let mut recorder = Recorder {
+            is_grabbing: Arc::new(AtomicBool::new(false)),
             sample_buffer: Arc::new(Mutex::new(CircularBuffer::new(max_size))),
             stream: None,
             config,
-        }
+        };
+
+        // Start recording as soon as the Recorder is created
+        recorder.start_recording();
+
+        recorder
     }
 
     fn start_recording(&mut self) {
@@ -53,17 +58,14 @@ impl Recorder {
         let sample_format = input_device.default_input_config().unwrap().sample_format();
 
         let sample_buffer = Arc::clone(&self.sample_buffer);
-        let is_recording = Arc::clone(&self.is_recording);
 
         let stream = match sample_format {
             SampleFormat::F32 => {
                 input_device.build_input_stream(
                     &self.config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        if is_recording.load(Ordering::SeqCst) {
-                            let mut buffer = sample_buffer.lock().unwrap();
-                            buffer.add_samples(data);
-                        }
+                        let mut buffer = sample_buffer.lock().unwrap();
+                        buffer.add_samples(data);
                     },
                     err_fn,
                     None,
@@ -74,11 +76,11 @@ impl Recorder {
         .unwrap();
 
         self.stream = Some(stream);
-        self.is_recording.store(true, Ordering::SeqCst);
+        self.is_grabbing.store(false, Ordering::SeqCst);
     }
 
-    fn stop_recording(&mut self) {
-        self.is_recording.store(false, Ordering::SeqCst);
+    fn grab_recording(&mut self) {
+        self.is_grabbing.store(false, Ordering::SeqCst);
         if let Some(stream) = self.stream.take() {
             drop(stream);  // This drops the stream and stops recording
         }
@@ -183,38 +185,24 @@ impl App for Recorder {
                 ui.horizontal_centered(|ui| {
                     ui.vertical_centered(|ui| {
                         // Start/Stop Recording button
-                        let record_button_text = if self.is_recording.load(Ordering::SeqCst) {
-                            "Stop"
+                        let record_button_text = if self.is_grabbing.load(Ordering::SeqCst) {
+                            "Stop Grab"
                         } else {
-                            "Record"
+                            "Start Grab"
                         };
                         
                         if ui.add_sized([100.0, 40.0], egui::Button::new(record_button_text)).clicked() {
-                            if self.is_recording.load(Ordering::SeqCst) {
+                            if self.is_grabbing.load(Ordering::SeqCst) {
                                 println!("Stop button clicked");
-                                self.stop_recording();
-                            } else {
-                                println!("Record button clicked");
+                                self.grab_recording();
+
+                                // Start recording again
                                 self.start_recording();
-                            }
-                        }
-
-                        ui.add_space(20.0);
-
-                        // Start Capture button
-                        if ui.add_sized([100.0, 40.0], egui::Button::new("Start Capture")).clicked() {
-                            if self.is_recording.load(Ordering::SeqCst) {
-                                println!("Start Capture button clicked");
+                            } else {
+                                println!("Start grab button clicked");
                                 let mut buffer = self.sample_buffer.lock().unwrap();
                                 buffer.set_static(); // Transition the buffer to static mode
-                            }
-                        }
-
-                        // Stop Capture button
-                        if ui.add_sized([100.0, 40.0], egui::Button::new("Stop Capture")).clicked() {
-                            if self.is_recording.load(Ordering::SeqCst) {
-                                println!("Stop Capture button clicked");
-                                self.stop_recording(); // This will also save the buffer contents
+                                self.is_grabbing.store(true, Ordering::SeqCst);
                             }
                         }
                     });
@@ -223,9 +211,6 @@ impl App for Recorder {
         });
     }
 }
-
-
-
 
 
 fn err_fn(err: cpal::StreamError) {
