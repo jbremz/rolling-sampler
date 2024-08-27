@@ -22,10 +22,11 @@ struct Recorder {
 }
 
 struct CircularBuffer {
-    buffer: Vec<f32>,  // Assuming f32 for simplicity, you can generalize it later
+    buffer: Vec<f32>,
     max_size: usize,
     write_pos: usize,
     is_static: bool,
+    current_size: usize,  // New field to track the current size
 }
 
 
@@ -42,8 +43,9 @@ impl Recorder {
             is_recording: Arc::new(AtomicBool::new(false)),
             sample_buffer: Arc::new(Mutex::new(CircularBuffer::new(max_size))),
             stream: None,
-            config}
+            config,
         }
+    }
 
     fn start_recording(&mut self) {
         let host = cpal::default_host();
@@ -81,10 +83,10 @@ impl Recorder {
             drop(stream);  // This drops the stream and stops recording
         }
 
-        let mut buffer = self.sample_buffer.lock().unwrap();
+        let buffer = self.sample_buffer.lock().unwrap();
 
         // Determine the number of samples in the buffer
-        let num_samples = buffer.buffer.len();
+        let num_samples = buffer.current_size;
         let num_channels = self.config.channels as usize;
 
         println!("Recorded shape: ({}, {})", num_samples / num_channels, num_channels);
@@ -99,16 +101,19 @@ impl Recorder {
 
         let mut writer = WavWriter::create("output.wav", spec).expect("Failed to create WAV writer");
 
-        // If the buffer is in static mode, save the entire buffer content
+        // Save all data in the buffer
         if buffer.is_static {
-            // Save all data in the static buffer
             for &sample in buffer.buffer.iter() {
                 writer.write_sample(sample).unwrap();
             }
         } else {
             // Save data from the circular buffer, taking care of wrapping
-            let start_pos = buffer.write_pos;
-            for i in 0..num_samples {
+            let start_pos = if buffer.current_size < buffer.max_size {
+                0
+            } else {
+                buffer.write_pos
+            };
+            for i in 0..buffer.current_size {
                 let pos = (start_pos + i) % buffer.max_size;
                 writer.write_sample(buffer.buffer[pos]).unwrap();
             }
@@ -119,33 +124,36 @@ impl Recorder {
         println!("Recording saved!");
 
         // Clear and reset the buffer for the next session
-        buffer.clear();
+        drop(buffer);
+        self.sample_buffer.lock().unwrap().clear();
     }
 }
 
 impl CircularBuffer {
     fn new(max_size: usize) -> Self {
         CircularBuffer {
-            buffer: vec![0.0; max_size],
+            buffer: Vec::with_capacity(max_size),
             max_size,
             write_pos: 0,
             is_static: false,
+            current_size: 0,
         }
     }
 
     fn add_samples(&mut self, samples: &[f32]) {
         if self.is_static {
             // In static mode, just append to the end
-            let end_pos = self.write_pos + samples.len();
-            if end_pos > self.max_size {
-                self.buffer.extend_from_slice(&samples[..(self.max_size - self.write_pos)]);
-            } else {
-                self.buffer.extend_from_slice(samples);
-            }
+            self.buffer.extend_from_slice(samples);
+            self.current_size = self.buffer.len();
         } else {
-            // In circular mode, overwrite old data
+            // In circular mode, overwrite old data if necessary
             for &sample in samples {
-                self.buffer[self.write_pos] = sample;
+                if self.current_size < self.max_size {
+                    self.buffer.push(sample);
+                    self.current_size += 1;
+                } else {
+                    self.buffer[self.write_pos] = sample;
+                }
                 self.write_pos = (self.write_pos + 1) % self.max_size;
             }
         }
@@ -157,9 +165,9 @@ impl CircularBuffer {
 
     fn clear(&mut self) {
         self.buffer.clear();
-        self.buffer.resize(self.max_size, 0.0);
         self.write_pos = 0;
         self.is_static = false;
+        self.current_size = 0;
     }
 }
 
