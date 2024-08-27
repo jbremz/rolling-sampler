@@ -16,10 +16,18 @@ enum SampleData {
 
 struct Recorder {
     is_recording: Arc<AtomicBool>,
-    sample_buffer: Arc<Mutex<SampleData>>,
+    sample_buffer: Arc<Mutex<CircularBuffer>>,
     stream: Option<cpal::Stream>,
     config: StreamConfig,
 }
+
+struct CircularBuffer {
+    buffer: Vec<f32>,  // Assuming f32 for simplicity, you can generalize it later
+    max_size: usize,
+    write_pos: usize,
+    is_static: bool,
+}
+
 
 impl Recorder {
     fn new() -> Self {
@@ -28,13 +36,14 @@ impl Recorder {
         let config = input_device.default_input_config().expect("Failed to get default input config");
         let config: StreamConfig = config.into();
 
+        let max_size = (config.sample_rate.0 * config.channels as u32 * 60) as usize; // 60 seconds worth of samples
+
         Recorder {
             is_recording: Arc::new(AtomicBool::new(false)),
-            sample_buffer: Arc::new(Mutex::new(SampleData::F32(Vec::new()))),
+            sample_buffer: Arc::new(Mutex::new(CircularBuffer::new(max_size))),
             stream: None,
-            config,
+            config}
         }
-    }
 
     fn start_recording(&mut self) {
         let host = cpal::default_host();
@@ -51,41 +60,7 @@ impl Recorder {
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         if is_recording.load(Ordering::SeqCst) {
                             let mut buffer = sample_buffer.lock().unwrap();
-                            if let SampleData::F32(ref mut vec) = *buffer {
-                                vec.extend_from_slice(data);
-                            }
-                        }
-                    },
-                    err_fn,
-                    None,
-                )
-            }
-            SampleFormat::I16 => {
-                *sample_buffer.lock().unwrap() = SampleData::I16(Vec::new());
-                input_device.build_input_stream(
-                    &self.config,
-                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        if is_recording.load(Ordering::SeqCst) {
-                            let mut buffer = sample_buffer.lock().unwrap();
-                            if let SampleData::I16(ref mut vec) = *buffer {
-                                vec.extend_from_slice(data);
-                            }
-                        }
-                    },
-                    err_fn,
-                    None,
-                )
-            }
-            SampleFormat::U16 => {
-                *sample_buffer.lock().unwrap() = SampleData::U16(Vec::new());
-                input_device.build_input_stream(
-                    &self.config,
-                    move |data: &[u16], _: &cpal::InputCallbackInfo| {
-                        if is_recording.load(Ordering::SeqCst) {
-                            let mut buffer = sample_buffer.lock().unwrap();
-                            if let SampleData::U16(ref mut vec) = *buffer {
-                                vec.extend_from_slice(data);
-                            }
+                            buffer.add_samples(data);
                         }
                     },
                     err_fn,
@@ -102,60 +77,92 @@ impl Recorder {
 
     fn stop_recording(&mut self) {
         self.is_recording.store(false, Ordering::SeqCst);
-        self.stream.take();  // This drops the stream and stops recording
+        if let Some(stream) = self.stream.take() {
+            drop(stream);  // This drops the stream and stops recording
+        }
 
-        let buffer = self.sample_buffer.lock().unwrap();
-        let num_samples = match &*buffer {
-            SampleData::F32(data) => data.len(),
-            SampleData::I16(data) => data.len(),
-            SampleData::U16(data) => data.len(),
-        };
+        let mut buffer = self.sample_buffer.lock().unwrap();
 
+        // Determine the number of samples in the buffer
+        let num_samples = buffer.buffer.len();
         let num_channels = self.config.channels as usize;
+
         println!("Recorded shape: ({}, {})", num_samples / num_channels, num_channels);
 
-        match &*buffer {
-            SampleData::F32(data) => {
-                let spec = WavSpec {
-                    channels: self.config.channels,
-                    sample_rate: self.config.sample_rate.0,
-                    bits_per_sample: 32,
-                    sample_format: HoundSampleFormat::Float,
-                };
-                let mut writer = WavWriter::create("output.wav", spec).unwrap();
-                for &sample in data.iter() {
-                    writer.write_sample(sample).unwrap();
-                }
+        // Prepare WAV writer specifications based on the buffer content
+        let spec = WavSpec {
+            channels: self.config.channels,
+            sample_rate: self.config.sample_rate.0,
+            bits_per_sample: 32, // Assuming f32 for this example
+            sample_format: HoundSampleFormat::Float,
+        };
+
+        let mut writer = WavWriter::create("output.wav", spec).expect("Failed to create WAV writer");
+
+        // If the buffer is in static mode, save the entire buffer content
+        if buffer.is_static {
+            // Save all data in the static buffer
+            for &sample in buffer.buffer.iter() {
+                writer.write_sample(sample).unwrap();
             }
-            SampleData::I16(data) => {
-                let spec = WavSpec {
-                    channels: self.config.channels,
-                    sample_rate: self.config.sample_rate.0,
-                    bits_per_sample: 16,
-                    sample_format: HoundSampleFormat::Int,
-                };
-                let mut writer = WavWriter::create("output.wav", spec).unwrap();
-                for &sample in data.iter() {
-                    writer.write_sample(sample).unwrap();
-                }
-            }
-            SampleData::U16(data) => {
-                let spec = WavSpec {
-                    channels: self.config.channels,
-                    sample_rate: self.config.sample_rate.0,
-                    bits_per_sample: 16,
-                    sample_format: HoundSampleFormat::Int,
-                };
-                let mut writer = WavWriter::create("output.wav", spec).unwrap();
-                for &sample in data.iter() {
-                    writer.write_sample(sample as i16).unwrap();
-                }
+        } else {
+            // Save data from the circular buffer, taking care of wrapping
+            let start_pos = buffer.write_pos;
+            for i in 0..num_samples {
+                let pos = (start_pos + i) % buffer.max_size;
+                writer.write_sample(buffer.buffer[pos]).unwrap();
             }
         }
 
+        writer.finalize().expect("Failed to finalize WAV writer");
+
         println!("Recording saved!");
+
+        // Clear and reset the buffer for the next session
+        buffer.clear();
     }
 }
+
+impl CircularBuffer {
+    fn new(max_size: usize) -> Self {
+        CircularBuffer {
+            buffer: vec![0.0; max_size],
+            max_size,
+            write_pos: 0,
+            is_static: false,
+        }
+    }
+
+    fn add_samples(&mut self, samples: &[f32]) {
+        if self.is_static {
+            // In static mode, just append to the end
+            let end_pos = self.write_pos + samples.len();
+            if end_pos > self.max_size {
+                self.buffer.extend_from_slice(&samples[..(self.max_size - self.write_pos)]);
+            } else {
+                self.buffer.extend_from_slice(samples);
+            }
+        } else {
+            // In circular mode, overwrite old data
+            for &sample in samples {
+                self.buffer[self.write_pos] = sample;
+                self.write_pos = (self.write_pos + 1) % self.max_size;
+            }
+        }
+    }
+
+    fn set_static(&mut self) {
+        self.is_static = true;
+    }
+
+    fn clear(&mut self) {
+        self.buffer.clear();
+        self.buffer.resize(self.max_size, 0.0);
+        self.write_pos = 0;
+        self.is_static = false;
+    }
+}
+
 
 impl App for Recorder {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
@@ -167,13 +174,14 @@ impl App for Recorder {
 
                 ui.horizontal_centered(|ui| {
                     ui.vertical_centered(|ui| {
-                        let button_text = if self.is_recording.load(Ordering::SeqCst) {
+                        // Start/Stop Recording button
+                        let record_button_text = if self.is_recording.load(Ordering::SeqCst) {
                             "Stop"
                         } else {
                             "Record"
                         };
                         
-                        if ui.add_sized([100.0, 40.0], egui::Button::new(button_text)).clicked() {
+                        if ui.add_sized([100.0, 40.0], egui::Button::new(record_button_text)).clicked() {
                             if self.is_recording.load(Ordering::SeqCst) {
                                 println!("Stop button clicked");
                                 self.stop_recording();
@@ -182,12 +190,32 @@ impl App for Recorder {
                                 self.start_recording();
                             }
                         }
+
+                        ui.add_space(20.0);
+
+                        // Start Capture button
+                        if ui.add_sized([100.0, 40.0], egui::Button::new("Start Capture")).clicked() {
+                            if self.is_recording.load(Ordering::SeqCst) {
+                                println!("Start Capture button clicked");
+                                let mut buffer = self.sample_buffer.lock().unwrap();
+                                buffer.set_static(); // Transition the buffer to static mode
+                            }
+                        }
+
+                        // Stop Capture button
+                        if ui.add_sized([100.0, 40.0], egui::Button::new("Stop Capture")).clicked() {
+                            if self.is_recording.load(Ordering::SeqCst) {
+                                println!("Stop Capture button clicked");
+                                self.stop_recording(); // This will also save the buffer contents
+                            }
+                        }
                     });
                 });
             });
         });
     }
 }
+
 
 
 
