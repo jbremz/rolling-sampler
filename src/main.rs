@@ -8,12 +8,6 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{SampleFormat, StreamConfig};
 use hound::{WavWriter, WavSpec, SampleFormat as HoundSampleFormat};
 
-enum SampleData {
-    F32(Vec<f32>),
-    I16(Vec<i16>),
-    U16(Vec<u16>),
-}
-
 struct Recorder {
     is_grabbing: Arc<AtomicBool>,
     sample_buffer: Arc<Mutex<CircularBuffer>>,
@@ -26,7 +20,7 @@ struct CircularBuffer {
     max_size: usize,
     write_pos: usize,
     is_static: bool,
-    current_size: usize,  // New field to track the current size
+    current_size: usize,
 }
 
 
@@ -37,7 +31,7 @@ impl Recorder {
         let config = input_device.default_input_config().expect("Failed to get default input config");
         let config: StreamConfig = config.into();
 
-        let max_size = (config.sample_rate.0 * config.channels as u32 * 60) as usize; // 60 seconds worth of samples
+        let max_size = (config.sample_rate.0 * config.channels as u32 * 5) as usize; // 60 seconds worth of samples
 
         let mut recorder = Recorder {
             is_grabbing: Arc::new(AtomicBool::new(false)),
