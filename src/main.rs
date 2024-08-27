@@ -167,13 +167,20 @@ impl App for Recorder {
 
                 ui.horizontal_centered(|ui| {
                     ui.vertical_centered(|ui| {
-                        if ui.add_sized([100.0, 40.0], egui::Button::new("Record")).clicked() {
-                            println!("Record button clicked");
-                            self.start_recording();
-                        }
-                        if ui.add_sized([100.0, 40.0], egui::Button::new("Stop")).clicked() {
-                            println!("Stop button clicked");
-                            self.stop_recording();
+                        let button_text = if self.is_recording.load(Ordering::SeqCst) {
+                            "Stop"
+                        } else {
+                            "Record"
+                        };
+                        
+                        if ui.add_sized([100.0, 40.0], egui::Button::new(button_text)).clicked() {
+                            if self.is_recording.load(Ordering::SeqCst) {
+                                println!("Stop button clicked");
+                                self.stop_recording();
+                            } else {
+                                println!("Record button clicked");
+                                self.start_recording();
+                            }
                         }
                     });
                 });
@@ -181,6 +188,7 @@ impl App for Recorder {
         });
     }
 }
+
 
 
 
