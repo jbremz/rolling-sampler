@@ -1,4 +1,4 @@
-use std::sync::{Arc};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use egui::{CentralPanel, ViewportId};
 use egui_winit::winit::event_loop::{ControlFlow, EventLoop};

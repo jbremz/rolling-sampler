@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 cpal = "0.15.3"
+eframe = "0.28.1"
 egui = "0.28.1"
 egui-winit = "0.28.1"
 ferris-says = "0.3.1"
