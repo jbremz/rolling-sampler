@@ -219,14 +219,14 @@ impl App for Recorder {
                 ui.vertical_centered(|ui| {
 
                     // Device selection dropdown
-                        ui.label("Input Device:");
-                        egui::ComboBox::from_label("")
-                            .selected_text(self.devices[self.current_device_index].name().unwrap_or_default())
-                            .show_ui(ui, |ui| {
-                                for (idx, device) in self.devices.iter().enumerate() {
-                                    ui.selectable_value(&mut self.current_device_index, idx, device.name().unwrap_or_default());
-                                }
-                            });
+                    ui.label("Input Device:");
+                    egui::ComboBox::from_label("")
+                        .selected_text(self.devices[self.current_device_index].name().unwrap_or_default())
+                        .show_ui(ui, |ui| {
+                            for (idx, device) in self.devices.iter().enumerate() {
+                                ui.selectable_value(&mut self.current_device_index, idx, device.name().unwrap_or_default());
+                            }
+                        });
 
 
                     if ui.button("Apply Device Change").clicked() {
