@@ -197,6 +197,7 @@ impl App for Recorder {
                 ui.add_space(10.0); // Add some space at the top
                 // ui.heading("Rolling Buffer Recorder");
                 ui.add_space(20.0); // Add some space between the heading and buttons
+                let panel_width = ui.available_width();
 
                 // Center the contents inside the horizontal layout
                 ui.vertical_centered(|ui| {
@@ -204,7 +205,10 @@ impl App for Recorder {
                     let mut buffer_size = *self.buffer_size.lock().unwrap();
                     let mut new_buffer_size = buffer_size as usize;
                     let max_buffer_size = 60 * self.config.sample_rate.0 as usize;
+                    // because slider contains subwidgets, this alignment doesn't work
                     ui.horizontal_centered(|ui| {
+                        let desired_width = panel_width * 0.8;
+                        ui.style_mut().spacing.slider_width = desired_width;
                         ui.add(egui::Slider::new(&mut new_buffer_size, 1..=max_buffer_size)
                             .text("Buffer Size (s)"));
                     });
