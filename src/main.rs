@@ -7,6 +7,9 @@ use std::error::Error;
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{SampleFormat, StreamConfig};
 use hound::{WavWriter, WavSpec, SampleFormat as HoundSampleFormat};
+use rfd::FileDialog;
+use chrono::Utc;
+
 
 struct Recorder {
     is_grabbing: Arc<AtomicBool>,
@@ -14,6 +17,7 @@ struct Recorder {
     stream: Option<cpal::Stream>,
     config: StreamConfig,
     buffer_size: Arc<Mutex<usize>>,
+    save_path: Option<String>, // Add an optional path to store the selected path
 }
 
 struct CircularBuffer {
@@ -23,6 +27,14 @@ struct CircularBuffer {
     write_pos: usize,
     current_size: usize,
     is_static_mode: bool,
+}
+
+fn get_file_safe_timestamp() -> String {
+    // Get the current time in UTC
+    let now = Utc::now();
+
+    // Format the time as "2024-09-10_15-06-32" (safe for file paths)
+    now.format("%Y-%m-%d_%H-%M-%S").to_string()
 }
 
 
@@ -40,6 +52,7 @@ impl Recorder {
             stream: None,
             config,
             buffer_size: Arc::new(Mutex::new(initial_buffer_size)), // Initialize buffer size
+            save_path: None,
         };
 
         // Start recording as soon as the Recorder is created
@@ -99,7 +112,8 @@ impl Recorder {
             sample_format: HoundSampleFormat::Float,
         };
     
-        let mut writer = WavWriter::create("output.wav", spec).expect("Failed to create WAV writer");
+        let filepath = format!("{}/{}.wav", self.save_path.as_ref().unwrap(), get_file_safe_timestamp());
+        let mut writer = WavWriter::create(filepath, spec).expect("Failed to create WAV writer");
     
         // Save buffer
         for &sample in buffer.static_buffer.iter().take(buffer.current_size) {
@@ -124,6 +138,14 @@ impl Recorder {
         // Update the circular buffer to the new size
         let mut buffer = self.sample_buffer.lock().unwrap();
         *buffer = CircularBuffer::new(new_size);
+    }
+
+    fn open_file_dialog(&mut self) {
+        if let Some(path) = FileDialog::new().pick_folder() {
+            // Store the selected directory path
+            self.save_path = Some(path.display().to_string());
+            println!("Save directory selected: {}", self.save_path.as_ref().unwrap());
+        }
     }
 }
 
@@ -183,10 +205,6 @@ impl CircularBuffer {
         self.current_size = 0;
         self.is_static_mode = false;
     }
-
-    fn get_static_buffer(&self) -> &[f32] {
-        &self.static_buffer
-    }
 }
 
 
@@ -203,22 +221,43 @@ impl App for Recorder {
                 ui.vertical_centered(|ui| {
                     // Slider to control buffer size
                     let mut buffer_size = *self.buffer_size.lock().unwrap();
-                    let mut new_buffer_size = buffer_size as usize;
-                    let max_buffer_size = 60 * self.config.sample_rate.0 as usize;
+
                     // because slider contains subwidgets, this alignment doesn't work
                     ui.horizontal_centered(|ui| {
                         let desired_width = panel_width * 0.8;
                         ui.style_mut().spacing.slider_width = desired_width;
-                        ui.add(egui::Slider::new(&mut new_buffer_size, 1..=max_buffer_size)
-                            .text("Buffer Size (s)"));
+
+                        // Convert buffer size from samples to seconds for the slider display
+                        let buffer_size_seconds = buffer_size as f32 / self.config.sample_rate.0 as f32;
+                        let max_buffer_seconds = 60.0; // Maximum 60 seconds for the slider
+                        let mut new_buffer_size_seconds = buffer_size_seconds;
+
+                        ui.add(egui::Slider::new(&mut new_buffer_size_seconds, 1.0..=max_buffer_seconds)
+                        .text("Buffer Size (s)"));
+
+                        let new_buffer_size = (new_buffer_size_seconds * self.config.sample_rate.0 as f32) as usize;
+
+                        if new_buffer_size != buffer_size {
+                            buffer_size = new_buffer_size;
+                            self.update_buffer_size(buffer_size);
+                            self.start_recording();
+                        }
+
                     });
-                    if new_buffer_size != buffer_size {
-                        buffer_size = new_buffer_size;
-                        self.update_buffer_size(buffer_size);
-                        self.start_recording();
-                    }
 
                     ui.add_space(20.0); // Add some space between the slider and the button
+
+                    // File path selection button
+                    if ui.button("Select Save Folder").clicked() {
+                        self.open_file_dialog(); // Open the native file dialog
+                    }
+
+                    if let Some(path) = &self.save_path {
+                        ui.label(format!("Selected Folder: {}", path));
+                    }
+
+                    ui.add_space(20.0); // Add some space between the path selector and the button
+
 
                     // Start/Stop Recording button
                     let record_button_text = if self.is_grabbing.load(Ordering::SeqCst) {
