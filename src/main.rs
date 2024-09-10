@@ -5,7 +5,7 @@ use eframe::{run_native, App, NativeOptions, CreationContext};
 use egui::CentralPanel;
 use std::error::Error;
 use cpal::traits::{DeviceTrait, HostTrait};
-use cpal::{SampleFormat, StreamConfig};
+use cpal::{Device, SampleFormat, StreamConfig};
 use hound::{WavWriter, WavSpec, SampleFormat as HoundSampleFormat};
 use rfd::FileDialog;
 use chrono::Utc;
@@ -17,9 +17,10 @@ struct Recorder {
     stream: Option<cpal::Stream>,
     config: StreamConfig,
     buffer_size: Arc<Mutex<usize>>,
-    save_path: Option<String>, // Add an optional path to store the selected path
+    save_path: Option<String>,
+    devices: Vec<Device>,
+    current_device_index: usize,
 }
-
 struct CircularBuffer {
     circular_buffer: Vec<f32>,
     static_buffer: Vec<f32>,
@@ -41,7 +42,9 @@ fn get_file_safe_timestamp() -> String {
 impl Recorder {
     fn new(initial_buffer_size: usize) -> Self {
         let host = cpal::default_host();
-        let input_device = host.default_input_device().expect("No input device available");
+        let devices: Vec<Device> = host.input_devices().expect("No input devices available").collect();
+        let current_device_index = devices.iter().position(|d| d.name().map(|n| n == "default").unwrap_or(false)).unwrap_or(0);
+        let input_device = &devices[current_device_index];
         let config = input_device.default_input_config().expect("Failed to get default input config");
         let config: StreamConfig = config.into();
         let initial_buffer_size = initial_buffer_size * config.sample_rate.0 as usize;
@@ -51,21 +54,18 @@ impl Recorder {
             sample_buffer: Arc::new(Mutex::new(CircularBuffer::new(initial_buffer_size))),
             stream: None,
             config,
-            buffer_size: Arc::new(Mutex::new(initial_buffer_size)), // Initialize buffer size
+            buffer_size: Arc::new(Mutex::new(initial_buffer_size)),
             save_path: None,
+            devices,
+            current_device_index,
         };
 
-        // Start recording as soon as the Recorder is created
         recorder.start_recording();
-
-        println!("initial buffer size: {}", initial_buffer_size);
-
         recorder
     }
 
     fn start_recording(&mut self) {
-        let host = cpal::default_host();
-        let input_device = host.default_input_device().expect("No input device available");
+        let input_device = &self.devices[self.current_device_index];
         let sample_format = input_device.default_input_config().unwrap().sample_format();
 
         let sample_buffer = Arc::clone(&self.sample_buffer);
@@ -213,12 +213,34 @@ impl App for Recorder {
         CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(10.0); // Add some space at the top
-                // ui.heading("Rolling Buffer Recorder");
-                ui.add_space(20.0); // Add some space between the heading and buttons
                 let panel_width = ui.available_width();
 
                 // Center the contents inside the horizontal layout
                 ui.vertical_centered(|ui| {
+
+                    // Device selection dropdown
+                        ui.label("Input Device:");
+                        egui::ComboBox::from_label("")
+                            .selected_text(self.devices[self.current_device_index].name().unwrap_or_default())
+                            .show_ui(ui, |ui| {
+                                for (idx, device) in self.devices.iter().enumerate() {
+                                    ui.selectable_value(&mut self.current_device_index, idx, device.name().unwrap_or_default());
+                                }
+                            });
+
+
+                    if ui.button("Apply Device Change").clicked() {
+                        // Stop current recording
+                        if let Some(stream) = self.stream.take() {
+                            drop(stream);
+                        }
+                        // Update config for new device
+                        let new_device = &self.devices[self.current_device_index];
+                        self.config = new_device.default_input_config().expect("Failed to get default input config").into();
+                        // Start recording with new device
+                        self.start_recording();
+                    }
+                    
                     // Slider to control buffer size
                     let mut buffer_size = *self.buffer_size.lock().unwrap();
 
