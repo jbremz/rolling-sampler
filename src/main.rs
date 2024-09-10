@@ -9,6 +9,7 @@ use cpal::{Device, SampleFormat, StreamConfig};
 use hound::{WavWriter, WavSpec, SampleFormat as HoundSampleFormat};
 use rfd::FileDialog;
 use chrono::Utc;
+use egui_plot::{Line, Plot, PlotPoint, PlotUi, PlotPoints};
 
 
 struct Recorder {
@@ -205,11 +206,31 @@ impl CircularBuffer {
         self.current_size = 0;
         self.is_static_mode = false;
     }
+
+    // Method to get the current samples for plotting (whether static or circular)
+    fn get_samples_for_plot(&self) -> Vec<f32> {
+        if self.is_static_mode {
+            self.static_buffer.clone()
+        } else {
+            if self.current_size < self.max_size {
+                self.circular_buffer.clone()
+            } else {
+                let mut plot_samples = Vec::with_capacity(self.max_size);
+                plot_samples.extend_from_slice(&self.circular_buffer[self.write_pos..]);
+                plot_samples.extend_from_slice(&self.circular_buffer[..self.write_pos]);
+                plot_samples
+            }
+        }
+    }
 }
 
 
 impl App for Recorder {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
+
+        // Repaint the UI to update the plot
+        ctx.request_repaint();
+
         CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(10.0); // Add some space at the top
@@ -239,6 +260,34 @@ impl App for Recorder {
                         self.config = new_device.default_input_config().expect("Failed to get default input config").into();
                         // Start recording with new device
                         self.start_recording();
+                    }
+
+                    // Fetch the audio buffer samples for plotting
+                    if let Ok(buffer) = self.sample_buffer.lock() {
+                        let plot_data = buffer.get_samples_for_plot();
+
+                        // Set your desired downsampling factor (e.g., take every 10th sample)
+                        let downsample_factor = 10;
+
+                        // Create plot points as Vec<[f64; 2]> with downsampling
+                        let points: Vec<[f64; 2]> = plot_data
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| i % downsample_factor == 0) // Pick every Nth sample
+                            .map(|(i, &sample)| [i as f64, sample as f64])  // Create [x, y] pairs
+                            .collect();
+
+                        let plot_points = PlotPoints::new(points);
+
+                        // Create a line from the points
+                        let line = Line::new(plot_points);
+
+                        // Display the plot
+                        Plot::new("Rolling Waveform Plot")
+                            .view_aspect(4.0)  // Adjust aspect ratio if necessary
+                            .show(ui, |plot_ui: &mut PlotUi| {
+                                plot_ui.line(line);
+                            });
                     }
                     
                     // Slider to control buffer size
