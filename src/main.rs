@@ -97,7 +97,7 @@ impl Recorder {
         self.is_grabbing.store(false, Ordering::SeqCst);
     }
 
-    fn grab_recording(&mut self) {
+    fn grab_recording(&mut self) { // TODO fix this because I don't think it reinitializes the buffer properly
         self.is_grabbing.store(false, Ordering::SeqCst);
         if let Some(stream) = self.stream.take() {
             drop(stream);  // This drops the stream and stops recording
@@ -110,6 +110,7 @@ impl Recorder {
         let num_channels = self.config.channels as usize;
     
         println!("Recorded shape: ({}, {})", num_samples / num_channels, num_channels);
+        println!("Sample rate: {}", self.config.sample_rate.0);
     
         // Prepare WAV writer specifications based on the buffer content
         let spec = WavSpec {
