@@ -2,14 +2,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use eframe::{run_native, App, NativeOptions, CreationContext};
-use egui::CentralPanel;
+use egui::{CentralPanel, Vec2b};
 use std::error::Error;
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{Device, SampleFormat, StreamConfig};
 use hound::{WavWriter, WavSpec, SampleFormat as HoundSampleFormat};
 use rfd::FileDialog;
 use chrono::Utc;
-use egui_plot::{Line, Plot, PlotPoint, PlotUi, PlotPoints};
+use egui_plot::{Line, Plot, PlotUi, PlotPoints};
 
 
 struct Recorder {
@@ -67,6 +67,12 @@ impl Recorder {
 
     fn start_recording(&mut self) {
         let input_device = &self.devices[self.current_device_index];
+
+        // Fetch the latest configuration each time start_recording is called
+        let config = input_device.default_input_config().expect("Failed to get default input config");
+        let config: StreamConfig = config.into();
+        self.config = config;  // Update the recorder's config with the latest one
+        
         let sample_format = input_device.default_input_config().unwrap().sample_format();
 
         let sample_buffer = Arc::clone(&self.sample_buffer);
@@ -285,6 +291,12 @@ impl App for Recorder {
                         // Display the plot
                         Plot::new("Rolling Waveform Plot")
                             .view_aspect(4.0)  // Adjust aspect ratio if necessary
+                            .auto_bounds(Vec2b::new(true, false))  // Disable auto bounds for y-axis, keep x-axis auto-bounds
+                            .show_axes(false)
+                            .show_grid(false)
+                            .show_background(false)
+                            .allow_zoom(false)
+                            .allow_drag(false)
                             .show(ui, |plot_ui: &mut PlotUi| {
                                 plot_ui.line(line);
                             });
