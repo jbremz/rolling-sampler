@@ -20,9 +20,6 @@ struct Recorder {
     config: StreamConfig,
     buffer_size: Arc<Mutex<usize>>,
     save_path: Option<String>,
-    input_device: cpal::Device,
-    // devices: Vec<Device>,
-    // current_device_index: usize,
 }
 struct CircularBuffer {
     circular_buffer: Vec<f32>,
@@ -45,9 +42,6 @@ fn get_file_safe_timestamp() -> String {
 impl Recorder {
     fn new(initial_buffer_size: usize) -> Self {
         let host = cpal::default_host();
-        // let devices: Vec<Device> = host.input_devices().expect("No input devices available").collect();
-        // let current_device_index = devices.iter().position(|d| d.name().map(|n| n == "default").unwrap_or(false)).unwrap_or(0);
-        // let input_device = &devices[current_device_index];
         let input_device = host.default_input_device().expect("No input device available");
         let config = input_device.default_input_config().expect("Failed to get default input config");
         let config: StreamConfig = config.into();
@@ -66,9 +60,6 @@ impl Recorder {
             config,
             buffer_size: Arc::new(Mutex::new(initial_buffer_size)),
             save_path,
-            input_device,
-            // devices,
-            // current_device_index,
         };
 
         recorder.start_recording();
@@ -76,16 +67,16 @@ impl Recorder {
     }
 
     fn start_recording(&mut self) {
-        // let input_device = &self.devices[self.current_device_index];
-        let input_device = &self.input_device;
+        // Get a fresh device each time
+        let host = cpal::default_host();
+        let input_device = host.default_input_device().expect("No input device available");
 
-        // Fetch the latest configuration each time start_recording is called
+        // Fetch the latest configuration
         let config = input_device.default_input_config().expect("Failed to get default input config");
         let config: StreamConfig = config.into();
-        self.config = config;  // Update the recorder's config with the latest one
-        
-        let sample_format = input_device.default_input_config().unwrap().sample_format();
+        self.config = config;
 
+        let sample_format = input_device.default_input_config().unwrap().sample_format();
         let sample_buffer = Arc::clone(&self.sample_buffer);
 
         let stream = match sample_format {
@@ -103,6 +94,11 @@ impl Recorder {
             _ => panic!("Unsupported sample format"),
         }
         .unwrap();
+
+        // Stop the previous stream if it exists
+        if let Some(old_stream) = self.stream.take() {
+            drop(old_stream);
+        }
 
         self.stream = Some(stream);
         self.is_grabbing.store(false, Ordering::SeqCst);
@@ -147,6 +143,9 @@ impl Recorder {
         drop(buffer);
         self.sample_buffer.lock().unwrap().stop_static_mode();
         self.sample_buffer.lock().unwrap().clear();
+
+        // Restart recording with a fresh stream
+        self.start_recording();
     }
     
 
@@ -365,9 +364,6 @@ impl App for Recorder {
                         if self.is_grabbing.load(Ordering::SeqCst) {
                             println!("Stop button clicked");
                             self.grab_recording();
-
-                            // Start recording again
-                            self.start_recording();
                         } else {
                             println!("Start grab button clicked");
                             let mut buffer = self.sample_buffer.lock().unwrap();
