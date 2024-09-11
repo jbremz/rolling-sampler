@@ -20,6 +20,8 @@ struct Recorder {
     config: StreamConfig,
     buffer_size: Arc<Mutex<usize>>,
     save_path: Option<String>,
+    devices: Vec<Device>,                // Store available input devices
+    current_device_index: usize,          // Store the index of the selected device
 }
 struct CircularBuffer {
     circular_buffer: Vec<f32>,
@@ -42,7 +44,10 @@ fn get_file_safe_timestamp() -> String {
 impl Recorder {
     fn new(initial_buffer_size: usize) -> Self {
         let host = cpal::default_host();
-        let input_device = host.default_input_device().expect("No input device available");
+        let devices: Vec<Device> = host.input_devices().unwrap().collect();  // Fetch available devices
+
+        let current_device_index = 0; // Set default to the first device
+        let input_device = devices[current_device_index].clone();
         let config = input_device.default_input_config().expect("Failed to get default input config");
         let config: StreamConfig = config.into();
         let initial_buffer_size = initial_buffer_size * config.sample_rate.0 as usize;
@@ -60,6 +65,8 @@ impl Recorder {
             config,
             buffer_size: Arc::new(Mutex::new(initial_buffer_size)),
             save_path,
+            devices,
+            current_device_index,
         };
 
         recorder.start_recording();
@@ -67,9 +74,9 @@ impl Recorder {
     }
 
     fn start_recording(&mut self) {
-        // Get a fresh device each time
-        let host = cpal::default_host();
-        let input_device = host.default_input_device().expect("No input device available");
+
+        // Get the currently selected device
+        let input_device = self.devices[self.current_device_index].clone();
 
         // Fetch the latest configuration
         let config = input_device.default_input_config().expect("Failed to get default input config");
@@ -104,7 +111,7 @@ impl Recorder {
         self.is_grabbing.store(false, Ordering::SeqCst);
     }
 
-    fn grab_recording(&mut self) { // TODO fix this because I don't think it reinitializes the buffer properly
+    fn grab_recording(&mut self) {
         self.is_grabbing.store(false, Ordering::SeqCst);
         if let Some(stream) = self.stream.take() {
             drop(stream);  // This drops the stream and stops recording
@@ -139,10 +146,10 @@ impl Recorder {
     
         println!("Recording saved!");
     
-        // Clear and reset the buffer for the next session
-        drop(buffer);
-        self.sample_buffer.lock().unwrap().stop_static_mode();
-        self.sample_buffer.lock().unwrap().clear();
+        // Replace the buffer with a new one rather than clearing the old one
+        drop(buffer);  // Unlock the mutex before replacing the buffer
+
+        self.reset_buffer();
 
         // Restart recording with a fresh stream
         self.start_recording();
@@ -150,13 +157,17 @@ impl Recorder {
     
 
     fn update_buffer_size(&mut self, new_size: usize) {
-        let mut buffer_size = self.buffer_size.lock().unwrap();
-        *buffer_size = new_size;
-
-        // Update the circular buffer to the new size
-        let mut buffer = self.sample_buffer.lock().unwrap();
-        *buffer = CircularBuffer::new(new_size);
+        {
+            // Update the buffer size in the Arc<Mutex<usize>>
+            let mut buffer_size = self.buffer_size.lock().unwrap();
+            *buffer_size = new_size;
+            // The lock (buffer_size) will be dropped at the end of this scope
+        }
+    
+        // Reset the buffer after the lock on buffer_size has been released
+        self.reset_buffer();
     }
+    
 
     fn open_file_dialog(&mut self) {
         if let Some(path) = FileDialog::new().pick_folder() {
@@ -164,6 +175,14 @@ impl Recorder {
             self.save_path = Some(path.display().to_string());
             println!("Save directory selected: {}", self.save_path.as_ref().unwrap());
         }
+    }
+
+    fn reset_buffer(&mut self) {
+        // Lock the current buffer size to reuse it
+        let new_buffer_size = *self.buffer_size.lock().unwrap();
+
+        // Replace the old buffer with a new one
+        self.sample_buffer = Arc::new(Mutex::new(CircularBuffer::new(new_buffer_size)));
     }
 }
 
@@ -257,27 +276,26 @@ impl App for Recorder {
                 ui.vertical_centered(|ui| {
 
                     // Device selection dropdown
-                    // ui.label("Input Device:");
-                    // egui::ComboBox::from_label("")
-                    //     .selected_text(self.devices[self.current_device_index].name().unwrap_or_default())
-                    //     .show_ui(ui, |ui| {
-                    //         for (idx, device) in self.devices.iter().enumerate() {
-                    //             ui.selectable_value(&mut self.current_device_index, idx, device.name().unwrap_or_default());
-                    //         }
-                    //     });
+                    ui.label("Input Device:");
+                    egui::ComboBox::from_label("Device")
+                        .selected_text(self.devices[self.current_device_index].name().unwrap_or_default().clone())
+                        .show_ui(ui, |ui| {
+                            for (idx, device) in self.devices.iter().enumerate() {
+                                ui.selectable_value(&mut self.current_device_index, idx, device.name().unwrap_or_default());
+                            }
+                        });
 
-
-                    // if ui.button("Apply Device Change").clicked() {
-                    //     // Stop current recording
-                    //     if let Some(stream) = self.stream.take() {
-                    //         drop(stream);
-                    //     }
-                    //     // Update config for new device
-                    //     let new_device = &self.devices[self.current_device_index];
-                    //     self.config = new_device.default_input_config().expect("Failed to get default input config").into();
-                    //     // Start recording with new device
-                    //     self.start_recording();
-                    // }
+                    if ui.button("Apply Device Change").clicked() {
+                        // Stop current recording
+                        if let Some(stream) = self.stream.take() {
+                            drop(stream);
+                        }
+                        // Update config for new device
+                        let new_device = &self.devices[self.current_device_index];
+                        self.config = new_device.default_input_config().expect("Failed to get default input config").into();
+                        // Start recording with new device
+                        self.start_recording();
+                    }
 
                     // Fetch the audio buffer samples for plotting
                     if let Ok(buffer) = self.sample_buffer.lock() {
@@ -326,12 +344,12 @@ impl App for Recorder {
                         let max_buffer_seconds = 60.0; // Maximum 60 seconds for the slider
                         let mut new_buffer_size_seconds = buffer_size_seconds;
 
-                        ui.add(egui::Slider::new(&mut new_buffer_size_seconds, 1.0..=max_buffer_seconds)
+                        let response = ui.add(egui::Slider::new(&mut new_buffer_size_seconds, 1.0..=max_buffer_seconds)
                         .text("Buffer Size (s)"));
 
                         let new_buffer_size = (new_buffer_size_seconds * self.config.sample_rate.0 as f32) as usize;
 
-                        if new_buffer_size != buffer_size {
+                        if response.drag_stopped() && new_buffer_size != buffer_size {
                             buffer_size = new_buffer_size;
                             self.update_buffer_size(buffer_size);
                             self.start_recording();
