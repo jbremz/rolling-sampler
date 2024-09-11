@@ -10,6 +10,9 @@ use hound::{WavWriter, WavSpec, SampleFormat as HoundSampleFormat};
 use rfd::FileDialog;
 use chrono::Utc;
 use egui_plot::{Line, Plot, PlotUi, PlotPoints};
+use std::path::PathBuf;
+use dirs::home_dir;
+use std::env;
 
 
 struct Recorder {
@@ -50,13 +53,19 @@ impl Recorder {
         let config: StreamConfig = config.into();
         let initial_buffer_size = initial_buffer_size * config.sample_rate.0 as usize;
 
+        // Resolve the Desktop path and convert it to a String
+        let save_path: Option<String> = home_dir().map(|mut path| {
+            path.push("Desktop");
+            path.to_str().map(|s| s.to_owned()) // Convert to String
+        }).flatten(); // Flatten the Option<Option<String>> to Option<String>
+
         let mut recorder = Recorder {
             is_grabbing: Arc::new(AtomicBool::new(false)),
             sample_buffer: Arc::new(Mutex::new(CircularBuffer::new(initial_buffer_size))),
             stream: None,
             config,
             buffer_size: Arc::new(Mutex::new(initial_buffer_size)),
-            save_path: None,
+            save_path,
             devices,
             current_device_index,
         };
