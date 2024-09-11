@@ -262,30 +262,6 @@ impl App for Recorder {
                 // Center the contents inside the horizontal layout
                 ui.vertical_centered(|ui| {
 
-                    // Device selection dropdown
-                    ui.label("Input Device:");
-                    let current_device_index = self.current_device_index; // Store the current device index for later comparison
-                    egui::ComboBox::from_label("Device")
-                        .selected_text(self.devices[self.current_device_index].name().unwrap_or_default().clone())
-                        .show_ui(ui, |ui| {
-                            for (idx, device) in self.devices.iter().enumerate() {
-                                ui.selectable_value(&mut self.current_device_index, idx, device.name().unwrap_or_default());
-                            }
-                        });
-
-                    // Check if the selected device has changed
-                    if current_device_index != self.current_device_index {
-                        // Stop current recording
-                        if let Some(stream) = self.stream.take() {
-                            drop(stream);
-                        }
-                        // Update config for new device
-                        let new_device = &self.devices[self.current_device_index];
-                        self.config = new_device.default_input_config().expect("Failed to get default input config").into();
-                        // Start recording with new device
-                        self.start_recording();
-                    }
-
                     // Fetch the audio buffer samples for plotting
                     if let Ok(buffer) = self.sample_buffer.lock() {
                         let plot_data = buffer.get_samples_for_plot();
@@ -315,6 +291,7 @@ impl App for Recorder {
                             .show_background(false)
                             .allow_zoom(false)
                             .allow_drag(false)
+                            .allow_scroll(false)
                             .show(ui, |plot_ui: &mut PlotUi| {
                                 plot_ui.line(line);
                             });
@@ -357,8 +334,31 @@ impl App for Recorder {
                         ui.label(format!("Selected Folder: {}", path));
                     }
 
-                    ui.add_space(20.0); // Add some space between the path selector and the button
+                    // ui.add_space(20.0); // Add some space between the path selector and the button
 
+                    // Device selection dropdown
+                    ui.label("Input Device:");
+                    let current_device_index = self.current_device_index; // Store the current device index for later comparison
+                    egui::ComboBox::from_id_source("Device")  // Using an ID instead of a label
+                    .selected_text(self.devices[self.current_device_index].name().unwrap_or_default().clone())
+                    .show_ui(ui, |ui| {
+                        for (idx, device) in self.devices.iter().enumerate() {
+                            ui.selectable_value(&mut self.current_device_index, idx, device.name().unwrap_or_default());
+                        }
+                    });
+
+                    // Check if the selected device has changed
+                    if current_device_index != self.current_device_index {
+                        // Stop current recording
+                        if let Some(stream) = self.stream.take() {
+                            drop(stream);
+                        }
+                        // Update config for new device
+                        let new_device = &self.devices[self.current_device_index];
+                        self.config = new_device.default_input_config().expect("Failed to get default input config").into();
+                        // Start recording with new device
+                        self.start_recording();
+                    }
 
                     // Start/Stop Recording button
                     let record_button_text = if self.is_grabbing.load(Ordering::SeqCst) {
