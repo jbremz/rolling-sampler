@@ -82,8 +82,9 @@ impl Recorder {
         let config = input_device.default_input_config().expect("Failed to get default input config");
         let config: StreamConfig = config.into();
         self.config = config;
-
         let sample_format = input_device.default_input_config().unwrap().sample_format();
+        
+        self.reset_buffer(); // Reset the buffer before starting a new recording
         let sample_buffer = Arc::clone(&self.sample_buffer);
 
         let stream = match sample_format {
@@ -148,8 +149,6 @@ impl Recorder {
     
         // Replace the buffer with a new one rather than clearing the old one
         drop(buffer);  // Unlock the mutex before replacing the buffer
-
-        self.reset_buffer();
 
         // Restart recording with a fresh stream
         self.start_recording();
@@ -229,18 +228,6 @@ impl CircularBuffer {
             self.static_buffer.extend_from_slice(&self.circular_buffer[self.write_pos..]);
             self.static_buffer.extend_from_slice(&self.circular_buffer[..self.write_pos]);
         }
-    }
-
-    fn stop_static_mode(&mut self) {
-        self.is_static_mode = false;
-    }
-
-    fn clear(&mut self) {
-        self.circular_buffer.clear();
-        self.static_buffer.clear();
-        self.write_pos = 0;
-        self.current_size = 0;
-        self.is_static_mode = false;
     }
 
     // Method to get the current samples for plotting (whether static or circular)
