@@ -10,9 +10,7 @@ use hound::{WavWriter, WavSpec, SampleFormat as HoundSampleFormat};
 use rfd::FileDialog;
 use chrono::Utc;
 use egui_plot::{Line, Plot, PlotUi, PlotPoints};
-use std::path::PathBuf;
 use dirs::home_dir;
-use std::env;
 
 
 struct Recorder {
@@ -22,8 +20,9 @@ struct Recorder {
     config: StreamConfig,
     buffer_size: Arc<Mutex<usize>>,
     save_path: Option<String>,
-    devices: Vec<Device>,
-    current_device_index: usize,
+    input_device: cpal::Device,
+    // devices: Vec<Device>,
+    // current_device_index: usize,
 }
 struct CircularBuffer {
     circular_buffer: Vec<f32>,
@@ -46,9 +45,10 @@ fn get_file_safe_timestamp() -> String {
 impl Recorder {
     fn new(initial_buffer_size: usize) -> Self {
         let host = cpal::default_host();
-        let devices: Vec<Device> = host.input_devices().expect("No input devices available").collect();
-        let current_device_index = devices.iter().position(|d| d.name().map(|n| n == "default").unwrap_or(false)).unwrap_or(0);
-        let input_device = &devices[current_device_index];
+        // let devices: Vec<Device> = host.input_devices().expect("No input devices available").collect();
+        // let current_device_index = devices.iter().position(|d| d.name().map(|n| n == "default").unwrap_or(false)).unwrap_or(0);
+        // let input_device = &devices[current_device_index];
+        let input_device = host.default_input_device().expect("No input device available");
         let config = input_device.default_input_config().expect("Failed to get default input config");
         let config: StreamConfig = config.into();
         let initial_buffer_size = initial_buffer_size * config.sample_rate.0 as usize;
@@ -66,8 +66,9 @@ impl Recorder {
             config,
             buffer_size: Arc::new(Mutex::new(initial_buffer_size)),
             save_path,
-            devices,
-            current_device_index,
+            input_device,
+            // devices,
+            // current_device_index,
         };
 
         recorder.start_recording();
@@ -75,7 +76,8 @@ impl Recorder {
     }
 
     fn start_recording(&mut self) {
-        let input_device = &self.devices[self.current_device_index];
+        // let input_device = &self.devices[self.current_device_index];
+        let input_device = &self.input_device;
 
         // Fetch the latest configuration each time start_recording is called
         let config = input_device.default_input_config().expect("Failed to get default input config");
@@ -256,27 +258,27 @@ impl App for Recorder {
                 ui.vertical_centered(|ui| {
 
                     // Device selection dropdown
-                    ui.label("Input Device:");
-                    egui::ComboBox::from_label("")
-                        .selected_text(self.devices[self.current_device_index].name().unwrap_or_default())
-                        .show_ui(ui, |ui| {
-                            for (idx, device) in self.devices.iter().enumerate() {
-                                ui.selectable_value(&mut self.current_device_index, idx, device.name().unwrap_or_default());
-                            }
-                        });
+                    // ui.label("Input Device:");
+                    // egui::ComboBox::from_label("")
+                    //     .selected_text(self.devices[self.current_device_index].name().unwrap_or_default())
+                    //     .show_ui(ui, |ui| {
+                    //         for (idx, device) in self.devices.iter().enumerate() {
+                    //             ui.selectable_value(&mut self.current_device_index, idx, device.name().unwrap_or_default());
+                    //         }
+                    //     });
 
 
-                    if ui.button("Apply Device Change").clicked() {
-                        // Stop current recording
-                        if let Some(stream) = self.stream.take() {
-                            drop(stream);
-                        }
-                        // Update config for new device
-                        let new_device = &self.devices[self.current_device_index];
-                        self.config = new_device.default_input_config().expect("Failed to get default input config").into();
-                        // Start recording with new device
-                        self.start_recording();
-                    }
+                    // if ui.button("Apply Device Change").clicked() {
+                    //     // Stop current recording
+                    //     if let Some(stream) = self.stream.take() {
+                    //         drop(stream);
+                    //     }
+                    //     // Update config for new device
+                    //     let new_device = &self.devices[self.current_device_index];
+                    //     self.config = new_device.default_input_config().expect("Failed to get default input config").into();
+                    //     // Start recording with new device
+                    //     self.start_recording();
+                    // }
 
                     // Fetch the audio buffer samples for plotting
                     if let Ok(buffer) = self.sample_buffer.lock() {
