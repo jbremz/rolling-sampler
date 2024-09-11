@@ -83,7 +83,7 @@ impl Recorder {
         let config: StreamConfig = config.into();
         self.config = config;
         let sample_format = input_device.default_input_config().unwrap().sample_format();
-        
+
         self.reset_buffer(); // Reset the buffer before starting a new recording
         let sample_buffer = Arc::clone(&self.sample_buffer);
 
@@ -264,6 +264,7 @@ impl App for Recorder {
 
                     // Device selection dropdown
                     ui.label("Input Device:");
+                    let current_device_index = self.current_device_index; // Store the current device index for later comparison
                     egui::ComboBox::from_label("Device")
                         .selected_text(self.devices[self.current_device_index].name().unwrap_or_default().clone())
                         .show_ui(ui, |ui| {
@@ -272,7 +273,8 @@ impl App for Recorder {
                             }
                         });
 
-                    if ui.button("Apply Device Change").clicked() {
+                    // Check if the selected device has changed
+                    if current_device_index != self.current_device_index {
                         // Stop current recording
                         if let Some(stream) = self.stream.take() {
                             drop(stream);
