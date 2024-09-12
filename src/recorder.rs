@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
@@ -14,7 +13,7 @@ use rfd::FileDialog;
 use crate::circular_buffer::CircularBuffer;
 
 pub struct Recorder {
-    is_grabbing: Arc<AtomicBool>,
+    is_grabbing: bool,
     sample_buffer: Arc<Mutex<CircularBuffer>>,
     stream: Option<cpal::Stream>,
     config: StreamConfig,
@@ -54,7 +53,7 @@ impl Recorder {
         let initial_buffer_size_samples = initial_buffer_size_s * config.sample_rate.0 as usize;
 
         let mut recorder = Recorder {
-            is_grabbing: Arc::new(AtomicBool::new(false)),
+            is_grabbing: false,
             sample_buffer: Arc::new(Mutex::new(CircularBuffer::new(initial_buffer_size_samples))),
             stream: None,
             config,
@@ -102,11 +101,11 @@ impl Recorder {
         }
 
         self.stream = Some(stream);
-        self.is_grabbing.store(false, Ordering::SeqCst);
+        self.is_grabbing = false;
     }
 
     fn grab_recording(&mut self) {
-        self.is_grabbing.store(false, Ordering::SeqCst);
+        self.is_grabbing = false;
         if let Some(stream) = self.stream.take() {
             drop(stream); // This drops the stream and stops recording
         }
@@ -319,22 +318,19 @@ impl App for Recorder {
                     ui.add_space(20.0); // Add some space between the path selector and the button
 
                     // Start/Stop Recording button
-                    let record_button_text = if self.is_grabbing.load(Ordering::SeqCst) {
-                        "Stop Grab"
-                    } else {
-                        "Start Grab"
-                    };
+                    let record_button_text =
+                        if self.is_grabbing { "Stop Grab" } else { "Start Grab" };
 
                     if ui.add_sized([100.0, 40.0], egui::Button::new(record_button_text)).clicked()
                     {
-                        if self.is_grabbing.load(Ordering::SeqCst) {
+                        if self.is_grabbing {
                             println!("Stop button clicked");
                             self.grab_recording();
                         } else {
                             println!("Start grab button clicked");
                             let mut buffer = self.sample_buffer.lock().unwrap();
                             buffer.start_static_mode(); // Transition the buffer to static mode
-                            self.is_grabbing.store(true, Ordering::SeqCst);
+                            self.is_grabbing = true;
                         }
                     }
                 });
