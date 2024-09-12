@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use eframe::{run_native, App, CreationContext};
 use egui::{CentralPanel, Vec2b, RichText};
 use std::error::Error;
-use cpal::traits::{DeviceTrait, HostTrait};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, StreamConfig};
 use hound::{WavWriter, WavSpec, SampleFormat as HoundSampleFormat};
 use rfd::FileDialog;
@@ -16,13 +16,18 @@ use dirs::home_dir;
 struct Recorder {
     is_grabbing: Arc<AtomicBool>,
     sample_buffer: Arc<Mutex<CircularBuffer>>,
-    stream: Option<cpal::Stream>,
+    input_stream: Option<cpal::Stream>,
     config: StreamConfig,
     buffer_size: Arc<Mutex<usize>>,
     save_path: Option<String>,
-    devices: Vec<Device>,                // Store available input devices
-    current_device_index: usize,          // Store the index of the selected device
+    input_devices: Vec<Device>,                // Store available input devices
+    current_input_device_index: usize,          // Store the index of the selected device
+    is_monitoring: Arc<AtomicBool>,    // New flag to track if monitoring is active
+    output_stream: Option<cpal::Stream>, // Optional output stream for monitoring
+    output_device: Option<Device>,     // Store the output device for monitoring
+    output_devices: Vec<Device>,       // Output devices (new field for audio output)
 }
+
 struct CircularBuffer {
     circular_buffer: Vec<f32>,
     static_buffer: Vec<f32>,
@@ -44,13 +49,16 @@ fn get_file_safe_timestamp() -> String {
 impl Recorder {
     fn new(initial_buffer_size: usize) -> Self {
         let host = cpal::default_host();
-        let devices: Vec<Device> = host.input_devices().unwrap().collect();  // Fetch available devices
+        let input_devices: Vec<Device> = host.input_devices().unwrap().collect();  // Fetch available devices
 
-        let current_device_index = 0; // Set default to the first device
-        let input_device = devices[current_device_index].clone();
+        let current_input_device_index = 0; // Set default to the first device
+        let input_device = input_devices[current_input_device_index].clone();
         let config = input_device.default_input_config().expect("Failed to get default input config");
         let config: StreamConfig = config.into();
         let initial_buffer_size = initial_buffer_size * config.sample_rate.0 as usize;
+
+        // Get available output devices for live monitoring
+        let output_devices: Vec<Device> = host.output_devices().unwrap().collect();
 
         // Resolve the Desktop path and convert it to a String
         let save_path: Option<String> = home_dir().map(|mut path| {
@@ -61,12 +69,16 @@ impl Recorder {
         let mut recorder = Recorder {
             is_grabbing: Arc::new(AtomicBool::new(false)),
             sample_buffer: Arc::new(Mutex::new(CircularBuffer::new(initial_buffer_size))),
-            stream: None,
+            input_stream: None,
             config,
             buffer_size: Arc::new(Mutex::new(initial_buffer_size)),
             save_path,
-            devices,
-            current_device_index,
+            input_devices,
+            current_input_device_index,
+            is_monitoring: Arc::new(AtomicBool::new(false)),
+            output_stream: None,
+            output_device: None,        // Initially, no output device selected
+            output_devices,             // Initialize with available output devices
         };
 
         recorder.start_recording();
@@ -76,7 +88,7 @@ impl Recorder {
     fn start_recording(&mut self) {
 
         // Get the currently selected device
-        let input_device = self.devices[self.current_device_index].clone();
+        let input_device = self.input_devices[self.current_input_device_index].clone();
 
         // Fetch the latest configuration
         let config = input_device.default_input_config().expect("Failed to get default input config");
@@ -104,17 +116,17 @@ impl Recorder {
         .unwrap();
 
         // Stop the previous stream if it exists
-        if let Some(old_stream) = self.stream.take() {
+        if let Some(old_stream) = self.input_stream.take() {
             drop(old_stream);
         }
 
-        self.stream = Some(stream);
+        self.input_stream = Some(stream);
         self.is_grabbing.store(false, Ordering::SeqCst);
     }
 
     fn grab_recording(&mut self) {
         self.is_grabbing.store(false, Ordering::SeqCst);
-        if let Some(stream) = self.stream.take() {
+        if let Some(stream) = self.input_stream.take() {
             drop(stream);  // This drops the stream and stops recording
         }
     
@@ -182,6 +194,49 @@ impl Recorder {
 
         // Replace the old buffer with a new one
         self.sample_buffer = Arc::new(Mutex::new(CircularBuffer::new(new_buffer_size)));
+    }
+
+    fn start_monitoring(&mut self) {
+        if let Some(output_device) = &self.output_device {
+            let config = output_device.default_output_config().unwrap();
+            let sample_format = config.sample_format();
+            let config: StreamConfig = config.into();
+
+            let sample_buffer = Arc::clone(&self.sample_buffer);
+            let output_stream = match sample_format {
+                SampleFormat::F32 => {
+                    output_device.build_output_stream(
+                        &config,
+                        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                            let buffer = sample_buffer.lock().unwrap();
+                            let samples = buffer.get_samples_for_plot(); // Fetch samples for output
+                            for (output_sample, input_sample) in data.iter_mut().zip(samples.iter()) {
+                                *output_sample = *input_sample; // Copy input to output
+                            }
+                        },
+                        err_fn,
+                        None,
+                    )
+                }
+                _ => panic!("Unsupported sample format for monitoring"),
+            }
+            .unwrap();
+
+            // Replace the old output stream
+            if let Some(old_stream) = self.output_stream.take() {
+                drop(old_stream);
+            }
+
+            self.output_stream = Some(output_stream);
+            self.is_monitoring.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn stop_monitoring(&mut self) {
+        if let Some(output_stream) = self.output_stream.take() {
+            drop(output_stream); // Stop the output stream
+        }
+        self.is_monitoring.store(false, Ordering::SeqCst);
     }
 }
 
@@ -269,27 +324,55 @@ impl App for Recorder {
                     // Device selection dropdown - can't centre this because it isn't an atomic widget 🤷
                     ui.horizontal( |ui| {
                         ui.label("Input Device:");
-                        let current_device_index = self.current_device_index; // Store the current device index for later comparison
+                        let current_device_index = self.current_input_device_index; // Store the current device index for later comparison
                         egui::ComboBox::from_id_source("Device")  // Using an ID instead of a label
-                        .selected_text(self.devices[self.current_device_index].name().unwrap_or_default().clone())
+                        .selected_text(self.input_devices[self.current_input_device_index].name().unwrap_or_default().clone())
                         .show_ui(ui, |ui| {
-                            for (idx, device) in self.devices.iter().enumerate() {
-                                ui.selectable_value(&mut self.current_device_index, idx, device.name().unwrap_or_default());
+                            for (idx, device) in self.input_devices.iter().enumerate() {
+                                ui.selectable_value(&mut self.current_input_device_index, idx, device.name().unwrap_or_default());
                             }
                         });
                         // Check if the selected device has changed
-                        if current_device_index != self.current_device_index {
+                        if current_device_index != self.current_input_device_index {
                             // Stop current recording
-                            if let Some(stream) = self.stream.take() {
+                            if let Some(stream) = self.input_stream.take() {
                                 drop(stream);
                             }
                             // Update config for new device
-                            let new_device = &self.devices[self.current_device_index];
+                            let new_device = &self.input_devices[self.current_input_device_index];
                             self.config = new_device.default_input_config().expect("Failed to get default input config").into();
                             // Start recording with new device
                             self.start_recording();
                         }
                     });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Output Device:");
+                        egui::ComboBox::from_id_source("OutputDevice")
+                            .selected_text(
+                                self.output_device
+                                    .as_ref()
+                                    .and_then(|d| d.name().ok()) // Get the name of the selected device
+                                    .unwrap_or("Select Output Device")
+                                    .to_string(), // Convert &str to String
+                            )
+                            .show_ui(ui, |ui| {
+                                for device in &self.output_devices {
+                                    // Get the name of the current device
+                                    if let Ok(device_name) = device.name() {
+                                        // Check if the device's name matches the currently selected one
+                                        let is_selected = self.output_device
+                                            .as_ref()
+                                            .and_then(|d| d.name().ok()) // Get the name of the currently selected device
+                                            .map_or(false, |name| name == device_name); // Compare the names
+                    
+                                        if ui.selectable_label(is_selected, device_name.clone()).clicked() {
+                                            self.output_device = Some(device.clone()); // Update the selected device
+                                        }
+                                    }
+                                }
+                            });
+                    }); 
 
                     // Fetch the audio buffer samples for plotting
                     if let Ok(buffer) = self.sample_buffer.lock() {
