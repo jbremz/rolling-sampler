@@ -1,6 +1,6 @@
 # Rolling Sampler
 ## Overview
-Desktop application for sampling live audio, starting recording from a desired number of seconds in the past so you don't have to manually move back in the audio to start recording. 
+Desktop application for sampling live audio, starting recording from a desired number of seconds in the past so you don't have to manually move back in the audio. 
 
 ## Features
 - Real-time Audio Visualisation: Displays a rolling waveform of audio input.
