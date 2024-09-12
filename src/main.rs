@@ -262,11 +262,36 @@ impl App for Recorder {
                 // Center the contents inside the horizontal layout
                 ui.vertical_centered(|ui| {
 
+                    // Device selection dropdown - can't centre this because it isn't an atomic widget 🤷
+                    ui.horizontal( |ui| {
+                        ui.label("Input Device:");
+                        let current_device_index = self.current_device_index; // Store the current device index for later comparison
+                        egui::ComboBox::from_id_source("Device")  // Using an ID instead of a label
+                        .selected_text(self.devices[self.current_device_index].name().unwrap_or_default().clone())
+                        .show_ui(ui, |ui| {
+                            for (idx, device) in self.devices.iter().enumerate() {
+                                ui.selectable_value(&mut self.current_device_index, idx, device.name().unwrap_or_default());
+                            }
+                        });
+                        // Check if the selected device has changed
+                        if current_device_index != self.current_device_index {
+                            // Stop current recording
+                            if let Some(stream) = self.stream.take() {
+                                drop(stream);
+                            }
+                            // Update config for new device
+                            let new_device = &self.devices[self.current_device_index];
+                            self.config = new_device.default_input_config().expect("Failed to get default input config").into();
+                            // Start recording with new device
+                            self.start_recording();
+                        }
+                    });
+
                     // Fetch the audio buffer samples for plotting
                     if let Ok(buffer) = self.sample_buffer.lock() {
                         let plot_data = buffer.get_samples_for_plot();
 
-                        // Set your desired downsampling factor (e.g., take every 10th sample)
+                        // Set desired downsampling factor (e.g., take every 10th sample)
                         let downsample_factor = 10;
 
                         // Create plot points as Vec<[f64; 2]> with downsampling
@@ -300,28 +325,24 @@ impl App for Recorder {
                     // Slider to control buffer size
                     let mut buffer_size = *self.buffer_size.lock().unwrap();
 
-                    // because slider contains subwidgets, this alignment doesn't work
-                    ui.horizontal_centered(|ui| {
-                        let desired_width = panel_width * 0.8;
-                        ui.style_mut().spacing.slider_width = desired_width;
+                    let desired_width = panel_width * 0.8;
+                    ui.style_mut().spacing.slider_width = desired_width;
 
-                        // Convert buffer size from samples to seconds for the slider display
-                        let buffer_size_seconds = buffer_size as f32 / self.config.sample_rate.0 as f32;
-                        let max_buffer_seconds = 60.0; // Maximum 60 seconds for the slider
-                        let mut new_buffer_size_seconds = buffer_size_seconds;
+                    // Convert buffer size from samples to seconds for the slider display
+                    let buffer_size_seconds = buffer_size as f32 / self.config.sample_rate.0 as f32;
+                    let max_buffer_seconds = 60.0; // Maximum 60 seconds for the slider
+                    let mut new_buffer_size_seconds = buffer_size_seconds;
 
-                        let response = ui.add(egui::Slider::new(&mut new_buffer_size_seconds, 1.0..=max_buffer_seconds)
-                        .text("Buffer Size (s)"));
+                    let response = ui.add(egui::Slider::new(&mut new_buffer_size_seconds, 1.0..=max_buffer_seconds)
+                    .text("Buffer Size (s)"));
 
-                        let new_buffer_size = (new_buffer_size_seconds * self.config.sample_rate.0 as f32) as usize;
+                    let new_buffer_size = (new_buffer_size_seconds * self.config.sample_rate.0 as f32) as usize;
 
-                        if response.drag_stopped() && new_buffer_size != buffer_size {
-                            buffer_size = new_buffer_size;
-                            self.update_buffer_size(buffer_size);
-                            self.start_recording();
-                        }
-
-                    });
+                    if response.drag_stopped() && new_buffer_size != buffer_size {
+                        buffer_size = new_buffer_size;
+                        self.update_buffer_size(buffer_size);
+                        self.start_recording();
+                    }
 
                     ui.add_space(20.0); // Add some space between the slider and the button
 
@@ -334,31 +355,7 @@ impl App for Recorder {
                         ui.label(format!("Selected Folder: {}", path));
                     }
 
-                    // ui.add_space(20.0); // Add some space between the path selector and the button
-
-                    // Device selection dropdown
-                    ui.label("Input Device:");
-                    let current_device_index = self.current_device_index; // Store the current device index for later comparison
-                    egui::ComboBox::from_id_source("Device")  // Using an ID instead of a label
-                    .selected_text(self.devices[self.current_device_index].name().unwrap_or_default().clone())
-                    .show_ui(ui, |ui| {
-                        for (idx, device) in self.devices.iter().enumerate() {
-                            ui.selectable_value(&mut self.current_device_index, idx, device.name().unwrap_or_default());
-                        }
-                    });
-
-                    // Check if the selected device has changed
-                    if current_device_index != self.current_device_index {
-                        // Stop current recording
-                        if let Some(stream) = self.stream.take() {
-                            drop(stream);
-                        }
-                        // Update config for new device
-                        let new_device = &self.devices[self.current_device_index];
-                        self.config = new_device.default_input_config().expect("Failed to get default input config").into();
-                        // Start recording with new device
-                        self.start_recording();
-                    }
+                    ui.add_space(20.0); // Add some space between the path selector and the button
 
                     // Start/Stop Recording button
                     let record_button_text = if self.is_grabbing.load(Ordering::SeqCst) {
@@ -392,7 +389,11 @@ fn err_fn(err: cpal::StreamError) {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let app_name = "Rolling Buffer Recorder";
-    let native_options = NativeOptions::default();
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([800.0, 400.0]), // Set your desired width and height
+        ..Default::default()
+    };
     let app_creator = move |_cc: &CreationContext| -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
         Ok(Box::new(Recorder::new(5))) // Initialize with a buffer size of 44100 samples
     };
