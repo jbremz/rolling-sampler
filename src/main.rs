@@ -11,7 +11,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
     let app_creator =
         move |_cc: &CreationContext| -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
-            Ok(Box::new(Recorder::new(5))) // Initialize with a buffer size of 44100 samples
+            Ok(Box::new(Recorder::new(5).unwrap())) // Initialize with a buffer size of 44100
+                                                    // samples
         };
     run_native(app_name, native_options, Box::new(app_creator))?;
     Ok(())

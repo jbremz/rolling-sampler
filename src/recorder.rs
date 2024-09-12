@@ -23,7 +23,7 @@ pub struct Recorder {
     devices: Vec<Device>,        // Store available input devices
     current_device_index: usize, // Store the index of the selected device
 }
-
+#[derive(Debug)]
 pub enum RecorderError {
     DevicesError(DevicesError),
     ConfigError(cpal::DefaultStreamConfigError),
@@ -45,16 +45,13 @@ impl From<DefaultStreamConfigError> for RecorderError {
 
 impl Recorder {
     pub fn new(initial_buffer_size_s: usize) -> Result<Self, RecorderError> {
-        let host = cpal::default_host();
-        let devices: Vec<Device> = host.input_devices()?.collect(); // Fetch available devices
+        let devices: Vec<Device> = cpal::default_host().input_devices()?.collect(); // Fetch available devices
 
         let input_device = devices.first().ok_or(RecorderError::NoInputDevices)?;
 
         let config: StreamConfig = input_device.default_input_config()?.into();
 
         let initial_buffer_size_samples = initial_buffer_size_s * config.sample_rate.0 as usize;
-
-        // Resolve the Desktop path and convert it to a String
 
         let mut recorder = Recorder {
             is_grabbing: Arc::new(AtomicBool::new(false)),
