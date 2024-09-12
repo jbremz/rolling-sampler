@@ -1,6 +1,6 @@
 # Rolling Sampler
 ## Overview
-This project is a desktop application for recording and visualising real-time audio input. The app allows users to record audio from their microphone or other input devices, save the recorded audio as a .wav file, and view a rolling waveform of the audio input in real-time. The user can also select the folder where recordings will be saved, choose the input device, and adjust the buffer size to control how much past audio is included in the saved recording.
+Desktop application for sampling live audio, starting recording from a desired number of seconds in the past so you don't have to manually move back in the audio to start recording. 
 
 ## Features
 - Real-time Audio Visualisation: Displays a rolling waveform of audio input.
@@ -39,12 +39,11 @@ This will launch the GUI, where you can start interacting with the application.
 2. Adjust Buffer Size: The slider allows you to change how much past audio is stored before saving (in seconds).
 3. Start/Stop Recording: Click "Start Grab" to begin capturing audio. Click "Stop Grab" to stop and save the recording.
 4. Select Save Folder: You can choose where the .wav files will be saved using the "Select Save Folder" button.
-5. View Waveform: A rolling waveform of the incoming audio is displayed in the UI.
 
 ## Code Structure
 - main.rs: Contains the core application logic, including real-time audio recording, waveform visualisation, and UI components.
-- Recorder: Manages audio input, buffer handling, and .wav file writing.
-- CircularBuffer: Circular buffer to store and manage audio samples, allowing both real-time visualisation and static mode for finalising recordings.
+    - Recorder: Manages audio input, buffer handling, and .wav file writing.
+    - CircularBuffer: Circular buffer to store and manage audio samples, allowing both real-time visualisation and static mode for finalising recordings.
 
 ## Dependencies
 The project relies on the following crates:
@@ -55,10 +54,8 @@ The project relies on the following crates:
 - chrono: For timestamp-based file names.
 - dirs: For determining the default save path (Desktop).
 
-## Future Improvements
-- Add more customisation options for audio format (bit depth, sample rate, channels)
-- Implement zooming and panning for waveform visualisation
-- Add more advanced recording features (e.g., pausing, resuming)
+## TODO
+- Add output device choice for monitoring (kind of important 😅).
 
 ## License
 This project is licensed under the MIT License - see the LICENSE file for details.
