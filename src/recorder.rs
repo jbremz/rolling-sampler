@@ -17,7 +17,7 @@ pub struct Recorder {
     sample_buffer: Arc<Mutex<CircularBuffer>>,
     stream: Option<cpal::Stream>,
     config: StreamConfig,
-    buffer_size: Arc<Mutex<usize>>,
+    buffer_size: usize,
     save_path: Option<String>,
     devices: Vec<Device>,        // Store available input devices
     current_device_index: usize, // Store the index of the selected device
@@ -57,7 +57,7 @@ impl Recorder {
             sample_buffer: Arc::new(Mutex::new(CircularBuffer::new(initial_buffer_size_samples))),
             stream: None,
             config,
-            buffer_size: Arc::new(Mutex::new(initial_buffer_size_samples)),
+            buffer_size: initial_buffer_size_samples,
             save_path: get_save_path(),
             devices,
             current_device_index: 0,
@@ -148,12 +148,7 @@ impl Recorder {
     }
 
     fn update_buffer_size(&mut self, new_size: usize) {
-        {
-            // Update the buffer size in the Arc<Mutex<usize>>
-            let mut buffer_size = self.buffer_size.lock().unwrap();
-            *buffer_size = new_size;
-            // The lock (buffer_size) will be dropped at the end of this scope
-        }
+        self.buffer_size = new_size;
 
         // Reset the buffer after the lock on buffer_size has been released
         self.reset_buffer();
@@ -168,11 +163,8 @@ impl Recorder {
     }
 
     fn reset_buffer(&mut self) {
-        // Lock the current buffer size to reuse it
-        let new_buffer_size = *self.buffer_size.lock().unwrap();
-
         // Replace the old buffer with a new one
-        self.sample_buffer = Arc::new(Mutex::new(CircularBuffer::new(new_buffer_size)));
+        self.sample_buffer = Arc::new(Mutex::new(CircularBuffer::new(self.buffer_size)));
     }
 }
 
@@ -276,13 +268,14 @@ impl App for Recorder {
                     );
 
                     // Slider to control buffer size
-                    let mut buffer_size = *self.buffer_size.lock().unwrap();
+                    // let mut buffer_size = *self.buffer_size.lock().unwrap();
 
                     let desired_width = panel_width * 0.8;
                     ui.style_mut().spacing.slider_width = desired_width;
 
                     // Convert buffer size from samples to seconds for the slider display
-                    let buffer_size_seconds = buffer_size as f32 / self.config.sample_rate.0 as f32;
+                    let buffer_size_seconds =
+                        self.buffer_size as f32 / self.config.sample_rate.0 as f32;
                     let max_buffer_seconds = 60.0; // Maximum 60 seconds for the slider
                     let mut new_buffer_size_seconds = buffer_size_seconds;
 
@@ -297,9 +290,8 @@ impl App for Recorder {
                         let new_buffer_size =
                             (new_buffer_size_seconds * self.config.sample_rate.0 as f32) as usize;
 
-                        if response.drag_stopped() && new_buffer_size != buffer_size {
-                            buffer_size = new_buffer_size;
-                            self.update_buffer_size(buffer_size);
+                        if response.drag_stopped() && new_buffer_size != self.buffer_size {
+                            self.update_buffer_size(new_buffer_size);
                             self.start_recording();
                         }
                     });
