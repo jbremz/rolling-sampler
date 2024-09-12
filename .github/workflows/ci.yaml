@@ -1,0 +1,25 @@
+name: Check, Lint, Build
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  Check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Check Formatting
+      run: cargo fmt --all -- --check
+      shell: bash
+
+    - name: Lint
+      run: cargo clippy --all-targets -- -D warnings
+
+    - name: Build Release
+      run: cargo build --all-targets
