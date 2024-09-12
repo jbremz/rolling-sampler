@@ -1,15 +1,15 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use eframe::{run_native, App, NativeOptions, CreationContext};
-use egui::{CentralPanel, Vec2b};
+use eframe::{run_native, App, CreationContext};
+use egui::{CentralPanel, Vec2b, RichText};
 use std::error::Error;
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{Device, SampleFormat, StreamConfig};
 use hound::{WavWriter, WavSpec, SampleFormat as HoundSampleFormat};
 use rfd::FileDialog;
 use chrono::Utc;
-use egui_plot::{Line, Plot, PlotUi, PlotPoints};
+use egui_plot::{Line, Plot, PlotUi, PlotPoints, Corner, CoordinatesFormatter};
 use dirs::home_dir;
 
 
@@ -255,8 +255,12 @@ impl App for Recorder {
         ctx.request_repaint();
 
         CentralPanel::default().show(ctx, |ui| {
+
+            ui.add_space(10.0); // Add some space at the top
+            
             ui.vertical_centered(|ui| {
-                ui.add_space(10.0); // Add some space at the top
+
+                // ui.add_space(10.0); // Add some space at the top
                 let panel_width = ui.available_width();
 
                 // Center the contents inside the horizontal layout
@@ -307,6 +311,9 @@ impl App for Recorder {
                         // Create a line from the points
                         let line = Line::new(plot_points);
 
+                        // this didn't do what I wanted it to do but I think it's something along these lines
+                        let no_coordinates_formatter = CoordinatesFormatter::new(|_, _| String::new());
+
                         // Display the plot
                         Plot::new("Rolling Waveform Plot")
                             .view_aspect(4.0)  // Adjust aspect ratio if necessary
@@ -317,11 +324,15 @@ impl App for Recorder {
                             .allow_zoom(false)
                             .allow_drag(false)
                             .allow_scroll(false)
+                            .sharp_grid_lines(true)
+                            .coordinates_formatter(Corner::LeftBottom, no_coordinates_formatter)  // Disable coordinates display
                             .show(ui, |plot_ui: &mut PlotUi| {
                                 plot_ui.line(line);
                             });
                     }
-                    
+
+                    ui.label(RichText::new("Choose how much past audio to include in the recording:").italics());
+
                     // Slider to control buffer size
                     let mut buffer_size = *self.buffer_size.lock().unwrap();
 
@@ -333,16 +344,19 @@ impl App for Recorder {
                     let max_buffer_seconds = 60.0; // Maximum 60 seconds for the slider
                     let mut new_buffer_size_seconds = buffer_size_seconds;
 
-                    let response = ui.add(egui::Slider::new(&mut new_buffer_size_seconds, 1.0..=max_buffer_seconds)
-                    .text("Buffer Size (s)"));
-
-                    let new_buffer_size = (new_buffer_size_seconds * self.config.sample_rate.0 as f32) as usize;
-
-                    if response.drag_stopped() && new_buffer_size != buffer_size {
-                        buffer_size = new_buffer_size;
-                        self.update_buffer_size(buffer_size);
-                        self.start_recording();
-                    }
+                    ui.horizontal( |ui| {
+                        ui.label("Buffer Size (s):");  // Text label before the slider
+                        let response = ui.add(egui::Slider::new(&mut new_buffer_size_seconds, 1.0..=max_buffer_seconds));
+                        // .text("Buffer Size (s)"));
+    
+                        let new_buffer_size = (new_buffer_size_seconds * self.config.sample_rate.0 as f32) as usize;
+    
+                        if response.drag_stopped() && new_buffer_size != buffer_size {
+                            buffer_size = new_buffer_size;
+                            self.update_buffer_size(buffer_size);
+                            self.start_recording();
+                        }
+                    });
 
                     ui.add_space(20.0); // Add some space between the slider and the button
 
@@ -388,10 +402,10 @@ fn err_fn(err: cpal::StreamError) {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let app_name = "Rolling Buffer Recorder";
+    let app_name = "Rolling Sampler";
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([800.0, 400.0]), // Set your desired width and height
+            .with_inner_size([800.0, 430.0]), // Set your desired width and height
         ..Default::default()
     };
     let app_creator = move |_cc: &CreationContext| -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {

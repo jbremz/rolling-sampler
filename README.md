@@ -1,4 +1,4 @@
-# Buffer sample
+# Rolling Sampler
 
 ### **Project Overview**
 
