@@ -1,0 +1,2 @@
+[alias]
+lint_fix = "clippy --fix --allow-dirty --allow-staged"
