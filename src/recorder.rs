@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 use cpal::traits::{DeviceTrait, HostTrait};
-use cpal::{Device, SampleFormat, StreamConfig};
+use cpal::{DefaultStreamConfigError, Device, DevicesError, SampleFormat, StreamConfig};
 use dirs::home_dir;
 use eframe::App;
 use egui::{CentralPanel, RichText, Vec2b};
@@ -24,37 +24,51 @@ pub struct Recorder {
     current_device_index: usize, // Store the index of the selected device
 }
 
-impl Recorder {
-    pub fn new(initial_buffer_size: usize) -> Self {
-        let host = cpal::default_host();
-        let devices: Vec<Device> = host.input_devices().unwrap().collect(); // Fetch available devices
+pub enum RecorderError {
+    DevicesError(DevicesError),
+    ConfigError(cpal::DefaultStreamConfigError),
+    NoInputDevices,
+    NoHomeDirectory,
+}
 
-        let current_device_index = 0; // Set default to the first device
-        let input_device = devices[current_device_index].clone();
-        let config =
-            input_device.default_input_config().expect("Failed to get default input config");
-        let config: StreamConfig = config.into();
-        let initial_buffer_size = initial_buffer_size * config.sample_rate.0 as usize;
+impl From<DevicesError> for RecorderError {
+    fn from(value: DevicesError) -> Self {
+        Self::DevicesError(value)
+    }
+}
+
+impl From<DefaultStreamConfigError> for RecorderError {
+    fn from(value: DefaultStreamConfigError) -> Self {
+        Self::ConfigError(value)
+    }
+}
+
+impl Recorder {
+    pub fn new(initial_buffer_size_s: usize) -> Result<Self, RecorderError> {
+        let host = cpal::default_host();
+        let devices: Vec<Device> = host.input_devices()?.collect(); // Fetch available devices
+
+        let input_device = devices.first().ok_or(RecorderError::NoInputDevices)?;
+
+        let config: StreamConfig = input_device.default_input_config()?.into();
+
+        let initial_buffer_size_samples = initial_buffer_size_s * config.sample_rate.0 as usize;
 
         // Resolve the Desktop path and convert it to a String
-        let save_path: Option<String> = home_dir().and_then(|mut path| {
-            path.push("Desktop");
-            path.to_str().map(|s| s.to_owned()) // Convert to String
-        }); // Flatten the Option<Option<String>> to Option<String>
 
         let mut recorder = Recorder {
             is_grabbing: Arc::new(AtomicBool::new(false)),
-            sample_buffer: Arc::new(Mutex::new(CircularBuffer::new(initial_buffer_size))),
+            sample_buffer: Arc::new(Mutex::new(CircularBuffer::new(initial_buffer_size_samples))),
             stream: None,
             config,
-            buffer_size: Arc::new(Mutex::new(initial_buffer_size)),
-            save_path,
+            buffer_size: Arc::new(Mutex::new(initial_buffer_size_samples)),
+            save_path: get_save_path(),
             devices,
-            current_device_index,
+            current_device_index: 0,
         };
 
         recorder.start_recording();
-        recorder
+        Ok(recorder)
     }
 
     fn start_recording(&mut self) {
@@ -342,4 +356,12 @@ fn get_file_safe_timestamp() -> String {
 
     // Format the time as "2024-09-10_15-06-32" (safe for file paths)
     now.format("%Y-%m-%d_%H-%M-%S").to_string()
+}
+
+fn get_save_path() -> Option<String> {
+    let mut home_dir = home_dir()?;
+    home_dir.push("Desktop");
+    let path_str = home_dir.to_str()?;
+
+    Some(path_str.to_owned())
 }
