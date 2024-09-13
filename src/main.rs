@@ -1,17 +1,17 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-use eframe::{run_native, App, CreationContext};
-use egui::{CentralPanel, Vec2b, RichText};
-use std::error::Error;
+use chrono::Utc;
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{Device, SampleFormat, StreamConfig};
-use hound::{WavWriter, WavSpec, SampleFormat as HoundSampleFormat};
-use rfd::FileDialog;
-use chrono::Utc;
-use egui_plot::{Line, Plot, PlotUi, PlotPoints, Corner, CoordinatesFormatter};
 use dirs::home_dir;
-
+use eframe::{run_native, App, CreationContext};
+use egui::{CentralPanel, RichText, Vec2b};
+use egui_plot::{CoordinatesFormatter, Corner, Line, Plot, PlotPoints, PlotUi};
+use hound::{SampleFormat as HoundSampleFormat, WavSpec, WavWriter};
+use rfd::FileDialog;
+use std::collections::VecDeque;
+use std::error::Error;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::sync::Mutex;
 
 struct Recorder {
     is_grabbing: Arc<AtomicBool>,
@@ -20,12 +20,13 @@ struct Recorder {
     config: StreamConfig,
     buffer_size: Arc<Mutex<usize>>,
     save_path: Option<String>,
-    input_devices: Vec<Device>,                // Store available input devices
-    current_input_device_index: usize,          // Store the index of the selected device
-    is_monitoring: Arc<AtomicBool>,    // New flag to track if monitoring is active
+    input_devices: Vec<Device>,          // Store available input devices
+    current_input_device_index: usize,   // Store the index of the selected device
+    is_monitoring: Arc<AtomicBool>,      // New flag to track if monitoring is active
     output_stream: Option<cpal::Stream>, // Optional output stream for monitoring
-    output_devices: Vec<Device>,       // Output devices (new field for audio output)
-    current_output_device_index: usize, // Store the index of the selected output device
+    output_devices: Vec<Device>,         // Output devices (new field for audio output)
+    current_output_device_index: usize,  // Store the index of the selected output device
+    monitoring_buffer: Arc<Mutex<VecDeque<f32>>>,
 }
 
 struct CircularBuffer {
@@ -45,27 +46,29 @@ fn get_file_safe_timestamp() -> String {
     now.format("%Y-%m-%d_%H-%M-%S").to_string()
 }
 
-
 impl Recorder {
     fn new(initial_buffer_size: usize) -> Self {
         let host = cpal::default_host();
-        let input_devices: Vec<Device> = host.input_devices().unwrap().collect();  // Fetch available devices
+        let input_devices: Vec<Device> = host.input_devices().unwrap().collect(); // Fetch available devices
 
         let current_input_device_index = 0; // Set default to the first device
         let input_device = input_devices[current_input_device_index].clone();
-        let config = input_device.default_input_config().expect("Failed to get default input config");
+        let config = input_device
+            .default_input_config()
+            .expect("Failed to get default input config");
         let config: StreamConfig = config.into();
         let initial_buffer_size = initial_buffer_size * config.sample_rate.0 as usize;
 
         // Get available output devices for live monitoring
         let output_devices: Vec<Device> = host.output_devices().unwrap().collect();
         let current_output_device_index = 0; // Set default to the first device
+        let initial_monitoring_capacity = initial_buffer_size * 2; // Example capacity
 
         // Resolve the Desktop path and convert it to a String
-        let save_path: Option<String> = home_dir().map(|mut path| {
+        let save_path: Option<String> = home_dir().and_then(|mut path| {
             path.push("Desktop");
-            path.to_str().map(|s| s.to_owned()) // Convert to String
-        }).flatten(); // Flatten the Option<Option<String>> to Option<String>
+            path.to_str().map(|s| s.to_owned())
+        });
 
         let mut recorder = Recorder {
             is_grabbing: Arc::new(AtomicBool::new(false)),
@@ -78,8 +81,11 @@ impl Recorder {
             current_input_device_index,
             is_monitoring: Arc::new(AtomicBool::new(false)),
             output_stream: None,
-            current_output_device_index,        // Initially, no output device selected
-            output_devices,             // Initialize with available output devices
+            current_output_device_index, // Initially, no output device selected
+            output_devices,              // Initialize with available output devices
+            monitoring_buffer: Arc::new(Mutex::new(VecDeque::with_capacity(
+                initial_monitoring_capacity,
+            ))),
         };
 
         recorder.start_recording();
@@ -87,12 +93,13 @@ impl Recorder {
     }
 
     fn start_recording(&mut self) {
-
         // Get the currently selected device
         let input_device = self.input_devices[self.current_input_device_index].clone();
 
         // Fetch the latest configuration
-        let config = input_device.default_input_config().expect("Failed to get default input config");
+        let config = input_device
+            .default_input_config()
+            .expect("Failed to get default input config");
         let config: StreamConfig = config.into();
         self.config = config;
         let sample_format = input_device.default_input_config().unwrap().sample_format();
@@ -100,13 +107,30 @@ impl Recorder {
         self.reset_buffer(); // Reset the buffer before starting a new recording
         let sample_buffer = Arc::clone(&self.sample_buffer);
 
+        let is_monitoring = Arc::clone(&self.is_monitoring);
+        let monitoring_buffer = Arc::clone(&self.monitoring_buffer);
+
         let stream = match sample_format {
             SampleFormat::F32 => {
                 input_device.build_input_stream(
                     &self.config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        let mut buffer = sample_buffer.lock().unwrap();
-                        buffer.add_samples(data);
+                        // Write to sample_buffer
+                        {
+                            let mut buffer = sample_buffer.lock().unwrap();
+                            buffer.add_samples(data);
+                        }
+
+                        // If monitoring is enabled, write to monitoring_buffer
+                        if is_monitoring.load(Ordering::SeqCst) {
+                            let mut m_buffer = monitoring_buffer.lock().unwrap();
+                            for &sample in data.iter() {
+                                if m_buffer.len() == m_buffer.capacity() {
+                                    m_buffer.pop_front();
+                                }
+                                m_buffer.push_back(sample);
+                            }
+                        }
                     },
                     err_fn,
                     None,
@@ -128,18 +152,22 @@ impl Recorder {
     fn grab_recording(&mut self) {
         self.is_grabbing.store(false, Ordering::SeqCst);
         if let Some(stream) = self.input_stream.take() {
-            drop(stream);  // This drops the stream and stops recording
+            drop(stream); // This drops the stream and stops recording
         }
-    
+
         let buffer = self.sample_buffer.lock().unwrap();
-    
+
         // Determine the number of samples in the buffer
         let num_samples = buffer.current_size;
         let num_channels = self.config.channels as usize;
-    
-        println!("Recorded shape: ({}, {})", num_samples / num_channels, num_channels);
+
+        println!(
+            "Recorded shape: ({}, {})",
+            num_samples / num_channels,
+            num_channels
+        );
         println!("Sample rate: {}", self.config.sample_rate.0);
-    
+
         // Prepare WAV writer specifications based on the buffer content
         let spec = WavSpec {
             channels: self.config.channels,
@@ -147,26 +175,29 @@ impl Recorder {
             bits_per_sample: 32, // Assuming f32 for this example
             sample_format: HoundSampleFormat::Float,
         };
-    
-        let filepath = format!("{}/{}.wav", self.save_path.as_ref().unwrap(), get_file_safe_timestamp());
+
+        let filepath = format!(
+            "{}/{}.wav",
+            self.save_path.as_ref().unwrap(),
+            get_file_safe_timestamp()
+        );
         let mut writer = WavWriter::create(filepath, spec).expect("Failed to create WAV writer");
-    
+
         // Save buffer
         for &sample in buffer.static_buffer.iter().take(buffer.current_size) {
             writer.write_sample(sample).unwrap();
         }
-        
+
         writer.finalize().expect("Failed to finalize WAV writer");
-    
+
         println!("Recording saved!");
-    
+
         // Replace the buffer with a new one rather than clearing the old one
-        drop(buffer);  // Unlock the mutex before replacing the buffer
+        drop(buffer); // Unlock the mutex before replacing the buffer
 
         // Restart recording with a fresh stream
         self.start_recording();
     }
-    
 
     fn update_buffer_size(&mut self, new_size: usize) {
         {
@@ -175,17 +206,19 @@ impl Recorder {
             *buffer_size = new_size;
             // The lock (buffer_size) will be dropped at the end of this scope
         }
-    
+
         // Reset the buffer after the lock on buffer_size has been released
         self.reset_buffer();
     }
-    
 
     fn open_file_dialog(&mut self) {
         if let Some(path) = FileDialog::new().pick_folder() {
             // Store the selected directory path
             self.save_path = Some(path.display().to_string());
-            println!("Save directory selected: {}", self.save_path.as_ref().unwrap());
+            println!(
+                "Save directory selected: {}",
+                self.save_path.as_ref().unwrap()
+            );
         }
     }
 
@@ -203,16 +236,20 @@ impl Recorder {
         let sample_format = config.sample_format();
         let config: StreamConfig = config.into();
 
-        let sample_buffer = Arc::clone(&self.sample_buffer);
+        let monitoring_buffer = Arc::clone(&self.monitoring_buffer);
+
         let output_stream = match sample_format {
             SampleFormat::F32 => {
                 output_device.build_output_stream(
                     &config,
                     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                        let buffer = sample_buffer.lock().unwrap();
-                        let samples = buffer.get_samples_for_plot(); // Fetch samples for output
-                        for (output_sample, input_sample) in data.iter_mut().zip(samples.iter()) {
-                            *output_sample = *input_sample; // Copy input to output
+                        let mut m_buffer = monitoring_buffer.lock().unwrap();
+                        for sample in data.iter_mut() {
+                            if let Some(s) = m_buffer.pop_front() {
+                                *sample = s;
+                            } else {
+                                *sample = 0.0; // Fill with silence if no data
+                            }
                         }
                     },
                     err_fn,
@@ -223,11 +260,10 @@ impl Recorder {
         }
         .unwrap();
 
-        // Replace the old output stream
+        // Stop the previous output stream if it exists
         if let Some(old_stream) = self.output_stream.take() {
             drop(old_stream);
         }
-
         self.output_stream = Some(output_stream);
         self.is_monitoring.store(true, Ordering::SeqCst);
         println!("Monitoring started");
@@ -238,6 +274,12 @@ impl Recorder {
             drop(output_stream); // Stop the output stream
         }
         self.is_monitoring.store(false, Ordering::SeqCst);
+
+        // Clear the monitoring buffer
+        let mut m_buffer = self.monitoring_buffer.lock().unwrap();
+        m_buffer.clear();
+
+        println!("Monitoring stopped");
     }
 }
 
@@ -279,10 +321,13 @@ impl CircularBuffer {
 
         // Copy the contents of the circular buffer to the static buffer
         if self.current_size < self.max_size {
-            self.static_buffer.extend_from_slice(&self.circular_buffer[..self.current_size]);
+            self.static_buffer
+                .extend_from_slice(&self.circular_buffer[..self.current_size]);
         } else {
-            self.static_buffer.extend_from_slice(&self.circular_buffer[self.write_pos..]);
-            self.static_buffer.extend_from_slice(&self.circular_buffer[..self.write_pos]);
+            self.static_buffer
+                .extend_from_slice(&self.circular_buffer[self.write_pos..]);
+            self.static_buffer
+                .extend_from_slice(&self.circular_buffer[..self.write_pos]);
         }
     }
 
@@ -303,36 +348,40 @@ impl CircularBuffer {
     }
 }
 
-
 impl App for Recorder {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
-
         // Repaint the UI to update the plot
         ctx.request_repaint();
 
         CentralPanel::default().show(ctx, |ui| {
-
             ui.add_space(10.0); // Add some space at the top
-            
-            ui.vertical_centered(|ui| {
 
+            ui.vertical_centered(|ui| {
                 // ui.add_space(10.0); // Add some space at the top
                 let panel_width = ui.available_width();
 
                 // Center the contents inside the horizontal layout
                 ui.vertical_centered(|ui| {
-
                     // Device selection dropdown - can't centre this because it isn't an atomic widget 🤷
-                    ui.horizontal( |ui| {
+                    ui.horizontal(|ui| {
                         ui.label("Input Device:");
                         let current_input_device_index = self.current_input_device_index; // Store the current device index for later comparison
-                        egui::ComboBox::from_id_source("Device")  // Using an ID instead of a label
-                            .selected_text(self.input_devices[self.current_input_device_index].name().unwrap_or_default().clone())
+                        egui::ComboBox::from_id_source("Device") // Using an ID instead of a label
+                            .selected_text(
+                                self.input_devices[self.current_input_device_index]
+                                    .name()
+                                    .unwrap_or_default()
+                                    .clone(),
+                            )
                             .show_ui(ui, |ui| {
                                 for (idx, device) in self.input_devices.iter().enumerate() {
-                                ui.selectable_value(&mut self.current_input_device_index, idx, device.name().unwrap_or_default());
-                            }
-                        });
+                                    ui.selectable_value(
+                                        &mut self.current_input_device_index,
+                                        idx,
+                                        device.name().unwrap_or_default(),
+                                    );
+                                }
+                            });
                         // Check if the selected device has changed
                         if current_input_device_index != self.current_input_device_index {
                             // Stop current recording
@@ -341,7 +390,10 @@ impl App for Recorder {
                             }
                             // Update config for new device
                             let new_device = &self.input_devices[self.current_input_device_index];
-                            self.config = new_device.default_input_config().expect("Failed to get default input config").into();
+                            self.config = new_device
+                                .default_input_config()
+                                .expect("Failed to get default input config")
+                                .into();
                             // Start recording with new device
                             self.start_recording();
                         }
@@ -350,25 +402,37 @@ impl App for Recorder {
                     // Output Device Selection
                     ui.horizontal(|ui| {
                         ui.label("Output Device:");
-                        let output_device = self.output_devices[self.current_output_device_index].clone();
+                        let output_device =
+                            self.output_devices[self.current_output_device_index].clone();
                         egui::ComboBox::from_id_source("OutputDevice")
-                            .selected_text(
-                                output_device.name().unwrap_or_default()
-                            )
+                            .selected_text(output_device.name().unwrap_or_default())
                             .show_ui(ui, |ui| {
                                 for device in &self.output_devices {
                                     // Get the name of the current device
                                     if let Ok(device_name) = device.name() {
                                         // Check if the device's name matches the currently selected one
-                                        let is_selected = self.output_devices[self.current_output_device_index].name().unwrap_or_default() == device_name;
-                    
-                                        if ui.selectable_label(is_selected, device_name.clone()).clicked() {
-                                            self.current_output_device_index = self.output_devices.iter().position(|d| d.name().unwrap_or_default() == device_name).unwrap_or(0); // Update the selected device
+                                        let is_selected = self.output_devices
+                                            [self.current_output_device_index]
+                                            .name()
+                                            .unwrap_or_default()
+                                            == device_name;
+
+                                        if ui
+                                            .selectable_label(is_selected, device_name.clone())
+                                            .clicked()
+                                        {
+                                            self.current_output_device_index = self
+                                                .output_devices
+                                                .iter()
+                                                .position(|d| {
+                                                    d.name().unwrap_or_default() == device_name
+                                                })
+                                                .unwrap_or(0); // Update the selected device
                                         }
                                     }
                                 }
                             });
-                    }); 
+                    });
 
                     // Add a checkbox to enable/disable monitoring
                     ui.horizontal(|ui| {
@@ -394,7 +458,7 @@ impl App for Recorder {
                             .iter()
                             .enumerate()
                             .filter(|(i, _)| i % downsample_factor == 0) // Pick every Nth sample
-                            .map(|(i, &sample)| [i as f64, sample as f64])  // Create [x, y] pairs
+                            .map(|(i, &sample)| [i as f64, sample as f64]) // Create [x, y] pairs
                             .collect();
 
                         let plot_points = PlotPoints::new(points);
@@ -403,12 +467,13 @@ impl App for Recorder {
                         let line = Line::new(plot_points);
 
                         // this didn't do what I wanted it to do but I think it's something along these lines
-                        let no_coordinates_formatter = CoordinatesFormatter::new(|_, _| String::new());
+                        let no_coordinates_formatter =
+                            CoordinatesFormatter::new(|_, _| String::new());
 
                         // Display the plot
                         Plot::new("Rolling Waveform Plot")
-                            .view_aspect(4.0)  // Adjust aspect ratio if necessary
-                            .auto_bounds(Vec2b::new(true, false))  // Disable auto bounds for y-axis, keep x-axis auto-bounds
+                            .view_aspect(4.0) // Adjust aspect ratio if necessary
+                            .auto_bounds(Vec2b::new(true, false)) // Disable auto bounds for y-axis, keep x-axis auto-bounds
                             .show_axes(false)
                             .show_grid(false)
                             .show_background(false)
@@ -416,13 +481,16 @@ impl App for Recorder {
                             .allow_drag(false)
                             .allow_scroll(false)
                             .sharp_grid_lines(true)
-                            .coordinates_formatter(Corner::LeftBottom, no_coordinates_formatter)  // Disable coordinates display
+                            .coordinates_formatter(Corner::LeftBottom, no_coordinates_formatter) // Disable coordinates display
                             .show(ui, |plot_ui: &mut PlotUi| {
                                 plot_ui.line(line);
                             });
                     }
 
-                    ui.label(RichText::new("Choose how much past audio to include in the recording:").italics());
+                    ui.label(
+                        RichText::new("Choose how much past audio to include in the recording:")
+                            .italics(),
+                    );
 
                     // Slider to control buffer size
                     let mut buffer_size = *self.buffer_size.lock().unwrap();
@@ -435,13 +503,17 @@ impl App for Recorder {
                     let max_buffer_seconds = 60.0; // Maximum 60 seconds for the slider
                     let mut new_buffer_size_seconds = buffer_size_seconds;
 
-                    ui.horizontal( |ui| {
-                        ui.label("Buffer Size (s):");  // Text label before the slider
-                        let response = ui.add(egui::Slider::new(&mut new_buffer_size_seconds, 1.0..=max_buffer_seconds));
+                    ui.horizontal(|ui| {
+                        ui.label("Buffer Size (s):"); // Text label before the slider
+                        let response = ui.add(egui::Slider::new(
+                            &mut new_buffer_size_seconds,
+                            1.0..=max_buffer_seconds,
+                        ));
                         // .text("Buffer Size (s)"));
-    
-                        let new_buffer_size = (new_buffer_size_seconds * self.config.sample_rate.0 as f32) as usize;
-    
+
+                        let new_buffer_size =
+                            (new_buffer_size_seconds * self.config.sample_rate.0 as f32) as usize;
+
                         if response.drag_stopped() && new_buffer_size != buffer_size {
                             buffer_size = new_buffer_size;
                             self.update_buffer_size(buffer_size);
@@ -461,14 +533,17 @@ impl App for Recorder {
                     }
 
                     ui.add_space(20.0); // Add some space between the path selector and the button
-                    // Start/Stop Recording button
+                                        // Start/Stop Recording button
                     let record_button_text = if self.is_grabbing.load(Ordering::SeqCst) {
                         "Stop Grab"
                     } else {
                         "Start Grab"
                     };
 
-                    if ui.add_sized([100.0, 40.0], egui::Button::new(record_button_text)).clicked() {
+                    if ui
+                        .add_sized([100.0, 40.0], egui::Button::new(record_button_text))
+                        .clicked()
+                    {
                         if self.is_grabbing.load(Ordering::SeqCst) {
                             println!("Stop button clicked");
                             self.grab_recording();
@@ -485,8 +560,6 @@ impl App for Recorder {
     }
 }
 
-
-
 fn err_fn(err: cpal::StreamError) {
     eprintln!("An error occurred on the input stream: {}", err);
 }
@@ -494,13 +567,13 @@ fn err_fn(err: cpal::StreamError) {
 fn main() -> Result<(), Box<dyn Error>> {
     let app_name = "Rolling Sampler";
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([800.0, 445.0]), // Set your desired width and height
+        viewport: egui::ViewportBuilder::default().with_inner_size([800.0, 445.0]), // Set your desired width and height
         ..Default::default()
     };
-    let app_creator = move |_cc: &CreationContext| -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
-        Ok(Box::new(Recorder::new(5))) // Initialize with a buffer size of 44100 samples
-    };
+    let app_creator =
+        move |_cc: &CreationContext| -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
+            Ok(Box::new(Recorder::new(5))) // Initialize with a buffer size of 44100 samples
+        };
     run_native(app_name, native_options, Box::new(app_creator))?;
     Ok(())
 }
