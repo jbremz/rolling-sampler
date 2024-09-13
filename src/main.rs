@@ -62,7 +62,7 @@ impl Recorder {
         // Get available output devices for live monitoring
         let output_devices: Vec<Device> = host.output_devices().unwrap().collect();
         let current_output_device_index = 0; // Set default to the first device
-        let initial_monitoring_capacity = initial_buffer_size * 2; // Example capacity
+        let initial_monitoring_capacity = (config.sample_rate.0 as usize) * 2; // Example: 2 seconds buffer
 
         // Resolve the Desktop path and convert it to a String
         let save_path: Option<String> = home_dir().and_then(|mut path| {
@@ -103,6 +103,11 @@ impl Recorder {
         let config: StreamConfig = config.into();
         self.config = config;
         let sample_format = input_device.default_input_config().unwrap().sample_format();
+
+        println!(
+            "Input Stream Config - Sample Rate: {}, Channels: {}",
+            self.config.sample_rate.0, self.config.channels
+        );
 
         self.reset_buffer(); // Reset the buffer before starting a new recording
         let sample_buffer = Arc::clone(&self.sample_buffer);
@@ -236,6 +241,11 @@ impl Recorder {
         let sample_format = config.sample_format();
         let config: StreamConfig = config.into();
 
+        println!(
+            "Output Stream Config - Sample Rate: {}, Channels: {}",
+            config.sample_rate.0, config.channels
+        );
+
         let monitoring_buffer = Arc::clone(&self.monitoring_buffer);
 
         let output_stream = match sample_format {
@@ -244,11 +254,13 @@ impl Recorder {
                     &config,
                     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                         let mut m_buffer = monitoring_buffer.lock().unwrap();
-                        for sample in data.iter_mut() {
-                            if let Some(s) = m_buffer.pop_front() {
-                                *sample = s;
-                            } else {
-                                *sample = 0.0; // Fill with silence if no data
+                        for frame in data.chunks_mut(config.channels as usize) {
+                            for sample in frame.iter_mut() {
+                                if let Some(s) = m_buffer.pop_front() {
+                                    *sample = s;
+                                } else {
+                                    *sample = 0.0; // Fill with silence if no data
+                                }
                             }
                         }
                     },
