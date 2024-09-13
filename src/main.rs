@@ -353,8 +353,7 @@ impl App for Recorder {
                                 self.output_device
                                     .as_ref()
                                     .and_then(|d| d.name().ok()) // Get the name of the selected device
-                                    .unwrap_or("Select Output Device")
-                                    .to_string(), // Convert &str to String
+                                    .unwrap_or_else(|| "Select Output Device".to_string())
                             )
                             .show_ui(ui, |ui| {
                                 for device in &self.output_devices {
@@ -453,7 +452,6 @@ impl App for Recorder {
                     }
 
                     ui.add_space(20.0); // Add some space between the path selector and the button
-
                     // Start/Stop Recording button
                     let record_button_text = if self.is_grabbing.load(Ordering::SeqCst) {
                         "Stop Grab"
@@ -488,7 +486,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let app_name = "Rolling Sampler";
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([800.0, 430.0]), // Set your desired width and height
+            .with_inner_size([800.0, 445.0]), // Set your desired width and height
         ..Default::default()
     };
     let app_creator = move |_cc: &CreationContext| -> Result<Box<dyn App>, Box<dyn Error + Send + Sync>> {
