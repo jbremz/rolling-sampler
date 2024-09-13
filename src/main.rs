@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use eframe::{run_native, App, CreationContext};
 use egui::{CentralPanel, Vec2b, RichText};
 use std::error::Error;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{Device, SampleFormat, StreamConfig};
 use hound::{WavWriter, WavSpec, SampleFormat as HoundSampleFormat};
 use rfd::FileDialog;
@@ -24,8 +24,8 @@ struct Recorder {
     current_input_device_index: usize,          // Store the index of the selected device
     is_monitoring: Arc<AtomicBool>,    // New flag to track if monitoring is active
     output_stream: Option<cpal::Stream>, // Optional output stream for monitoring
-    output_device: Option<Device>,     // Store the output device for monitoring
     output_devices: Vec<Device>,       // Output devices (new field for audio output)
+    current_output_device_index: usize, // Store the index of the selected output device
 }
 
 struct CircularBuffer {
@@ -59,6 +59,7 @@ impl Recorder {
 
         // Get available output devices for live monitoring
         let output_devices: Vec<Device> = host.output_devices().unwrap().collect();
+        let current_output_device_index = 0; // Set default to the first device
 
         // Resolve the Desktop path and convert it to a String
         let save_path: Option<String> = home_dir().map(|mut path| {
@@ -77,7 +78,7 @@ impl Recorder {
             current_input_device_index,
             is_monitoring: Arc::new(AtomicBool::new(false)),
             output_stream: None,
-            output_device: None,        // Initially, no output device selected
+            current_output_device_index,        // Initially, no output device selected
             output_devices,             // Initialize with available output devices
         };
 
@@ -197,39 +198,39 @@ impl Recorder {
     }
 
     fn start_monitoring(&mut self) {
-        if let Some(output_device) = &self.output_device {
-            let config = output_device.default_output_config().unwrap();
-            let sample_format = config.sample_format();
-            let config: StreamConfig = config.into();
+        let output_device = self.output_devices[self.current_output_device_index].clone();
+        let config = output_device.default_output_config().unwrap();
+        let sample_format = config.sample_format();
+        let config: StreamConfig = config.into();
 
-            let sample_buffer = Arc::clone(&self.sample_buffer);
-            let output_stream = match sample_format {
-                SampleFormat::F32 => {
-                    output_device.build_output_stream(
-                        &config,
-                        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                            let buffer = sample_buffer.lock().unwrap();
-                            let samples = buffer.get_samples_for_plot(); // Fetch samples for output
-                            for (output_sample, input_sample) in data.iter_mut().zip(samples.iter()) {
-                                *output_sample = *input_sample; // Copy input to output
-                            }
-                        },
-                        err_fn,
-                        None,
-                    )
-                }
-                _ => panic!("Unsupported sample format for monitoring"),
+        let sample_buffer = Arc::clone(&self.sample_buffer);
+        let output_stream = match sample_format {
+            SampleFormat::F32 => {
+                output_device.build_output_stream(
+                    &config,
+                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                        let buffer = sample_buffer.lock().unwrap();
+                        let samples = buffer.get_samples_for_plot(); // Fetch samples for output
+                        for (output_sample, input_sample) in data.iter_mut().zip(samples.iter()) {
+                            *output_sample = *input_sample; // Copy input to output
+                        }
+                    },
+                    err_fn,
+                    None,
+                )
             }
-            .unwrap();
-
-            // Replace the old output stream
-            if let Some(old_stream) = self.output_stream.take() {
-                drop(old_stream);
-            }
-
-            self.output_stream = Some(output_stream);
-            self.is_monitoring.store(true, Ordering::SeqCst);
+            _ => panic!("Unsupported sample format for monitoring"),
         }
+        .unwrap();
+
+        // Replace the old output stream
+        if let Some(old_stream) = self.output_stream.take() {
+            drop(old_stream);
+        }
+
+        self.output_stream = Some(output_stream);
+        self.is_monitoring.store(true, Ordering::SeqCst);
+        println!("Monitoring started");
     }
 
     fn stop_monitoring(&mut self) {
@@ -324,16 +325,16 @@ impl App for Recorder {
                     // Device selection dropdown - can't centre this because it isn't an atomic widget 🤷
                     ui.horizontal( |ui| {
                         ui.label("Input Device:");
-                        let current_device_index = self.current_input_device_index; // Store the current device index for later comparison
+                        let current_input_device_index = self.current_input_device_index; // Store the current device index for later comparison
                         egui::ComboBox::from_id_source("Device")  // Using an ID instead of a label
-                        .selected_text(self.input_devices[self.current_input_device_index].name().unwrap_or_default().clone())
-                        .show_ui(ui, |ui| {
-                            for (idx, device) in self.input_devices.iter().enumerate() {
+                            .selected_text(self.input_devices[self.current_input_device_index].name().unwrap_or_default().clone())
+                            .show_ui(ui, |ui| {
+                                for (idx, device) in self.input_devices.iter().enumerate() {
                                 ui.selectable_value(&mut self.current_input_device_index, idx, device.name().unwrap_or_default());
                             }
                         });
                         // Check if the selected device has changed
-                        if current_device_index != self.current_input_device_index {
+                        if current_input_device_index != self.current_input_device_index {
                             // Stop current recording
                             if let Some(stream) = self.input_stream.take() {
                                 drop(stream);
@@ -346,32 +347,40 @@ impl App for Recorder {
                         }
                     });
 
+                    // Output Device Selection
                     ui.horizontal(|ui| {
                         ui.label("Output Device:");
+                        let output_device = self.output_devices[self.current_output_device_index].clone();
                         egui::ComboBox::from_id_source("OutputDevice")
                             .selected_text(
-                                self.output_device
-                                    .as_ref()
-                                    .and_then(|d| d.name().ok()) // Get the name of the selected device
-                                    .unwrap_or_else(|| "Select Output Device".to_string())
+                                output_device.name().unwrap_or_default()
                             )
                             .show_ui(ui, |ui| {
                                 for device in &self.output_devices {
                                     // Get the name of the current device
                                     if let Ok(device_name) = device.name() {
                                         // Check if the device's name matches the currently selected one
-                                        let is_selected = self.output_device
-                                            .as_ref()
-                                            .and_then(|d| d.name().ok()) // Get the name of the currently selected device
-                                            .map_or(false, |name| name == device_name); // Compare the names
+                                        let is_selected = self.output_devices[self.current_output_device_index].name().unwrap_or_default() == device_name;
                     
                                         if ui.selectable_label(is_selected, device_name.clone()).clicked() {
-                                            self.output_device = Some(device.clone()); // Update the selected device
+                                            self.current_output_device_index = self.output_devices.iter().position(|d| d.name().unwrap_or_default() == device_name).unwrap_or(0); // Update the selected device
                                         }
                                     }
                                 }
                             });
                     }); 
+
+                    // Add a checkbox to enable/disable monitoring
+                    ui.horizontal(|ui| {
+                        let mut monitoring = self.is_monitoring.load(Ordering::SeqCst);
+                        if ui.checkbox(&mut monitoring, "Enable Monitoring").changed() {
+                            if monitoring {
+                                self.start_monitoring();
+                            } else {
+                                self.stop_monitoring();
+                            }
+                        }
+                    });
 
                     // Fetch the audio buffer samples for plotting
                     if let Ok(buffer) = self.sample_buffer.lock() {
