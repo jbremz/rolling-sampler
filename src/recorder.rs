@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{Receiver, Sender};
 
 use chrono::Utc;
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -14,13 +14,15 @@ use crate::circular_buffer::CircularBuffer;
 
 pub struct Recorder {
     is_grabbing: bool,
-    sample_buffer: Arc<Mutex<CircularBuffer>>,
+    sample_buffer: CircularBuffer,
     stream: Option<cpal::Stream>,
     config: StreamConfig,
     buffer_size: usize,
     save_path: Option<String>,
     devices: Vec<Device>,        // Store available input devices
     current_device_index: usize, // Store the index of the selected device
+    audio_receiver: Receiver<Vec<f32>>,
+    audio_transmitter: Sender<Vec<f32>>,
 }
 #[derive(Debug)]
 pub enum RecorderError {
@@ -51,16 +53,18 @@ impl Recorder {
         let config: StreamConfig = input_device.default_input_config()?.into();
 
         let initial_buffer_size_samples = initial_buffer_size_s * config.sample_rate.0 as usize;
-
+        let (tx, rx) = std::sync::mpsc::channel();
         let mut recorder = Recorder {
             is_grabbing: false,
-            sample_buffer: Arc::new(Mutex::new(CircularBuffer::new(initial_buffer_size_samples))),
+            sample_buffer: CircularBuffer::new(initial_buffer_size_samples),
             stream: None,
             config,
             buffer_size: initial_buffer_size_samples,
             save_path: get_save_path(),
             devices,
             current_device_index: 0,
+            audio_receiver: rx,
+            audio_transmitter: tx,
         };
 
         recorder.start_recording();
@@ -77,16 +81,14 @@ impl Recorder {
         let config: StreamConfig = config.into();
         self.config = config;
         let sample_format = input_device.default_input_config().unwrap().sample_format();
-
+        let audio_transmitter = self.audio_transmitter.clone();
         self.reset_buffer(); // Reset the buffer before starting a new recording
-        let sample_buffer = Arc::clone(&self.sample_buffer);
 
         let stream = match sample_format {
             SampleFormat::F32 => input_device.build_input_stream(
                 &self.config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    let mut buffer = sample_buffer.lock().unwrap();
-                    buffer.add_samples(data);
+                    let _ = audio_transmitter.send(Vec::from(data));
                 },
                 err_fn,
                 None,
@@ -110,10 +112,8 @@ impl Recorder {
             drop(stream); // This drops the stream and stops recording
         }
 
-        let buffer = self.sample_buffer.lock().unwrap();
-
         // Determine the number of samples in the buffer
-        let num_samples = buffer.current_size;
+        let num_samples = self.sample_buffer.current_size;
         let num_channels = self.config.channels as usize;
 
         println!("Recorded shape: ({}, {})", num_samples / num_channels, num_channels);
@@ -132,16 +132,13 @@ impl Recorder {
         let mut writer = WavWriter::create(filepath, spec).expect("Failed to create WAV writer");
 
         // Save buffer
-        for &sample in buffer.static_buffer.iter().take(buffer.current_size) {
+        for sample in self.sample_buffer.static_buffer.drain(..) {
             writer.write_sample(sample).unwrap();
         }
 
         writer.finalize().expect("Failed to finalize WAV writer");
 
         println!("Recording saved!");
-
-        // Replace the buffer with a new one rather than clearing the old one
-        drop(buffer); // Unlock the mutex before replacing the buffer
 
         // Restart recording with a fresh stream
         self.start_recording();
@@ -164,7 +161,7 @@ impl Recorder {
 
     fn reset_buffer(&mut self) {
         // Replace the old buffer with a new one
-        self.sample_buffer = Arc::new(Mutex::new(CircularBuffer::new(self.buffer_size)));
+        self.sample_buffer = CircularBuffer::new(self.buffer_size);
     }
 }
 
@@ -172,6 +169,10 @@ impl App for Recorder {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
         // Repaint the UI to update the plot
         ctx.request_repaint();
+
+        while let Ok(thing) = self.audio_receiver.try_recv() {
+            self.sample_buffer.add_samples(&thing);
+        }
 
         CentralPanel::default().show(ctx, |ui| {
             ui.add_space(10.0); // Add some space at the top
@@ -221,46 +222,44 @@ impl App for Recorder {
                     });
 
                     // Fetch the audio buffer samples for plotting
-                    if let Ok(buffer) = self.sample_buffer.lock() {
-                        let plot_data = buffer.get_samples_for_plot();
 
-                        // Set desired downsampling factor (e.g., take every 10th sample)
-                        let downsample_factor = 10;
+                    let plot_data = self.sample_buffer.get_samples_for_plot();
 
-                        // Create plot points as Vec<[f64; 2]> with downsampling
-                        let points: Vec<[f64; 2]> = plot_data
-                            .iter()
-                            .enumerate()
-                            .filter(|(i, _)| i % downsample_factor == 0) // Pick every Nth sample
-                            .map(|(i, &sample)| [i as f64, sample as f64]) // Create [x, y] pairs
-                            .collect();
+                    // Set desired downsampling factor (e.g., take every 10th sample)
+                    let downsample_factor = 10;
 
-                        let plot_points = PlotPoints::new(points);
+                    // Create plot points as Vec<[f64; 2]> with downsampling
+                    let points: Vec<[f64; 2]> = plot_data
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| i % downsample_factor == 0) // Pick every Nth sample
+                        .map(|(i, &sample)| [i as f64, sample as f64]) // Create [x, y] pairs
+                        .collect();
 
-                        // Create a line from the points
-                        let line = Line::new(plot_points);
+                    let plot_points = PlotPoints::new(points);
 
-                        // this didn't do what I wanted it to do but I think it's something along
-                        // these lines
-                        let no_coordinates_formatter =
-                            CoordinatesFormatter::new(|_, _| String::new());
+                    // Create a line from the points
+                    let line = Line::new(plot_points);
 
-                        // Display the plot
-                        Plot::new("Rolling Waveform Plot")
-                            .view_aspect(4.0) // Adjust aspect ratio if necessary
-                            .auto_bounds(Vec2b::new(true, false)) // Disable auto bounds for y-axis, keep x-axis auto-bounds
-                            .show_axes(false)
-                            .show_grid(false)
-                            .show_background(false)
-                            .allow_zoom(false)
-                            .allow_drag(false)
-                            .allow_scroll(false)
-                            .sharp_grid_lines(true)
-                            .coordinates_formatter(Corner::LeftBottom, no_coordinates_formatter) // Disable coordinates display
-                            .show(ui, |plot_ui: &mut PlotUi| {
-                                plot_ui.line(line);
-                            });
-                    }
+                    // this didn't do what I wanted it to do but I think it's something along
+                    // these lines
+                    let no_coordinates_formatter = CoordinatesFormatter::new(|_, _| String::new());
+
+                    // Display the plot
+                    Plot::new("Rolling Waveform Plot")
+                        .view_aspect(4.0) // Adjust aspect ratio if necessary
+                        .auto_bounds(Vec2b::new(true, false)) // Disable auto bounds for y-axis, keep x-axis auto-bounds
+                        .show_axes(false)
+                        .show_grid(false)
+                        .show_background(false)
+                        .allow_zoom(false)
+                        .allow_drag(false)
+                        .allow_scroll(false)
+                        .sharp_grid_lines(true)
+                        .coordinates_formatter(Corner::LeftBottom, no_coordinates_formatter) // Disable coordinates display
+                        .show(ui, |plot_ui: &mut PlotUi| {
+                            plot_ui.line(line);
+                        });
 
                     ui.label(
                         RichText::new("Choose how much past audio to include in the recording:")
@@ -320,8 +319,8 @@ impl App for Recorder {
                             self.grab_recording();
                         } else {
                             println!("Start grab button clicked");
-                            let mut buffer = self.sample_buffer.lock().unwrap();
-                            buffer.start_static_mode(); // Transition the buffer to static mode
+
+                            self.sample_buffer.start_static_mode(); // Transition the buffer to static mode
                             self.is_grabbing = true;
                         }
                     }
