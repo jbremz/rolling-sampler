@@ -29,9 +29,9 @@ struct Recorder {
     output_stream: Option<cpal::Stream>, // Optional output stream for monitoring
     output_devices: Vec<Device>,         // Output devices (new field for audio output)
     current_output_device_index: usize,  // Store the index of the selected output device
-    monitoring_buffer: Arc<Mutex<VecDeque<f32>>>,
+    monitoring_buffers: Arc<Mutex<Vec<VecDeque<f32>>>>, // One VecDeque per channel
     resampler: Option<SincFixedIn<f32>>,
-    resample_buffer: Vec<f32>,
+    resample_buffers: Vec<Vec<f32>>, // One buffer per channel for resampled data
 }
 
 struct CircularBuffer {
@@ -62,12 +62,22 @@ impl Recorder {
             .default_input_config()
             .expect("Failed to get default input config");
         let config: StreamConfig = config.into();
-        let initial_buffer_size = initial_buffer_size * config.sample_rate.0 as usize;
+        let initial_buffer_size =
+            initial_buffer_size * config.sample_rate.0 as usize * config.channels as usize;
 
         // Get available output devices for live monitoring
         let output_devices: Vec<Device> = host.output_devices().unwrap().collect();
         let current_output_device_index = 0; // Set default to the first device
-        let initial_monitoring_capacity = (config.sample_rate.0 as usize) * 2; // Example: 2 seconds buffer
+        let initial_monitoring_capacity = config.sample_rate.0 as usize * 4; // Example: 4 second buffer
+
+        let num_channels = config.channels as usize;
+        let monitoring_buffers = Arc::new(Mutex::new(vec![
+            VecDeque::with_capacity(
+                initial_monitoring_capacity
+            );
+            num_channels
+        ]));
+        let resample_buffers = vec![Vec::new(); num_channels];
 
         // Resolve the Desktop path and convert it to a String
         let save_path: Option<String> = home_dir().and_then(|mut path| {
@@ -88,11 +98,9 @@ impl Recorder {
             output_stream: None,
             current_output_device_index, // Initially, no output device selected
             output_devices,              // Initialize with available output devices
-            monitoring_buffer: Arc::new(Mutex::new(VecDeque::with_capacity(
-                initial_monitoring_capacity,
-            ))),
+            monitoring_buffers,
             resampler: None,
-            resample_buffer: Vec::new(),
+            resample_buffers,
         };
 
         recorder.start_recording();
@@ -120,7 +128,8 @@ impl Recorder {
         let sample_buffer = Arc::clone(&self.sample_buffer);
 
         let is_monitoring = Arc::clone(&self.is_monitoring);
-        let monitoring_buffer = Arc::clone(&self.monitoring_buffer);
+        let num_channels = self.config.channels as usize;
+        let monitoring_buffers = Arc::clone(&self.monitoring_buffers);
 
         let stream = match sample_format {
             SampleFormat::F32 => {
@@ -133,10 +142,12 @@ impl Recorder {
                             buffer.add_samples(data);
                         }
 
-                        // If monitoring is enabled, write to monitoring_buffer
+                        // If monitoring is enabled, distribute samples to per-channel buffers
                         if is_monitoring.load(Ordering::SeqCst) {
-                            let mut m_buffer = monitoring_buffer.lock().unwrap();
-                            for &sample in data.iter() {
+                            let mut m_buffers = monitoring_buffers.lock().unwrap();
+                            for (i, &sample) in data.iter().enumerate() {
+                                let channel = i % num_channels;
+                                let m_buffer = &mut m_buffers[channel];
                                 if m_buffer.len() == m_buffer.capacity() {
                                     m_buffer.pop_front();
                                 }
@@ -253,6 +264,9 @@ impl Recorder {
             config.sample_rate.0, config.channels
         );
 
+        let num_output_channels = config.channels as usize;
+        let num_input_channels = self.config.channels as usize;
+
         // Initialize resampler only if sample rates differ
         let input_sample_rate = self.config.sample_rate.0 as f64;
         let output_sample_rate = config.sample_rate.0 as f64;
@@ -268,8 +282,8 @@ impl Recorder {
                     oversampling_factor: 160,
                     window: WindowFunction::BlackmanHarris2,
                 },
-                self.config.channels as usize, // Number of channels
-                4096,                          // Buffer size
+                4096,               // Chunk size
+                num_input_channels, // Number of channels
             )
             .expect("Failed to create resampler");
             self.resampler = Some(resampler);
@@ -277,9 +291,9 @@ impl Recorder {
             self.resampler = None;
         }
 
-        self.resample_buffer = Vec::new();
+        self.resample_buffers = vec![Vec::new(); num_input_channels]; // Reset resample buffers
 
-        let monitoring_buffer = Arc::clone(&self.monitoring_buffer);
+        let monitoring_buffers = Arc::clone(&self.monitoring_buffers);
         let resampler = Arc::new(Mutex::new(self.resampler.take()));
 
         let resampler_clone = Arc::clone(&resampler);
@@ -288,33 +302,73 @@ impl Recorder {
                 output_device.build_output_stream(
                     &config,
                     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                        let mut m_buffer = monitoring_buffer.lock().unwrap();
-                        let mut samples: Vec<f32> = Vec::new();
-                        while let Some(sample) = m_buffer.pop_front() {
-                            samples.push(sample);
+                        let mut m_buffers = monitoring_buffers.lock().unwrap();
+                        let mut samples_per_channel: Vec<Vec<f32>> =
+                            vec![Vec::new(); num_input_channels];
+
+                        // Collect samples per channel
+                        for (channel, m_buffer) in m_buffers.iter_mut().enumerate() {
+                            while let Some(sample) = m_buffer.pop_front() {
+                                samples_per_channel[channel].push(sample);
+                            }
                         }
 
-                        // Resample if necessary
-                        let resampled_samples =
-                            if let Some(mut resampler) = resampler_clone.lock().unwrap().as_mut() {
-                                let resampled = resampler
-                                    .process(&[samples], None)
-                                    .expect("Resampling failed");
-                                resampled[0].clone()
-                            } else {
-                                samples
-                            };
+                        // Determine the minimum number of samples across all channels
+                        let min_samples = samples_per_channel
+                            .iter()
+                            .map(|v| v.len())
+                            .min()
+                            .unwrap_or(0);
 
-                        // Convert mono to stereo by duplicating samples
-                        for i in 0..(data.len() / config.channels as usize) {
-                            if i < resampled_samples.len() {
-                                let sample = resampled_samples[i];
-                                for channel in 0..config.channels as usize {
-                                    data[i * config.channels as usize + channel] = sample;
+                        // Resample if necessary and if we have enough samples
+                        let resampled_samples_per_channel: Vec<Vec<f32>> =
+                            if let Some(resampler) = resampler_clone.lock().unwrap().as_mut() {
+                                let chunk_size = resampler.input_frames_next();
+                                if min_samples >= chunk_size {
+                                    // We have enough samples to resample
+                                    let input: Vec<&[f32]> = samples_per_channel
+                                        .iter()
+                                        .map(|v| &v[..chunk_size])
+                                        .collect();
+                                    match resampler.process(&input, None) {
+                                        Ok(output) => output,
+                                        Err(e) => {
+                                            eprintln!("Resampling failed: {}", e);
+                                            vec![vec![0.0; chunk_size]; num_input_channels]
+                                            // Return silence on error
+                                        }
+                                    }
+                                } else {
+                                    // Not enough samples, return the original samples
+                                    samples_per_channel.clone()
                                 }
                             } else {
-                                for channel in 0..config.channels as usize {
-                                    data[i * config.channels as usize + channel] = 0.0;
+                                samples_per_channel.clone()
+                            };
+
+                        // Trim the original samples_per_channel to remove processed samples
+                        if min_samples > 0 {
+                            for channel_samples in samples_per_channel.iter_mut() {
+                                channel_samples.drain(..min_samples);
+                            }
+                        }
+
+                        // Determine the number of frames to write
+                        let num_frames = data.len() / num_output_channels;
+
+                        for frame_idx in 0..num_frames {
+                            for channel in 0..num_output_channels {
+                                if channel < resampled_samples_per_channel.len() {
+                                    let channel_samples = &resampled_samples_per_channel[channel];
+                                    if frame_idx < channel_samples.len() {
+                                        data[frame_idx * num_output_channels + channel] =
+                                            channel_samples[frame_idx];
+                                    } else {
+                                        data[frame_idx * num_output_channels + channel] = 0.0;
+                                        // Silence
+                                    }
+                                } else {
+                                    data[frame_idx * num_output_channels + channel] = 0.0;
                                     // Silence
                                 }
                             }
@@ -327,9 +381,6 @@ impl Recorder {
             _ => panic!("Unsupported sample format for monitoring"),
         }
         .unwrap();
-
-        // After the closure, you can retrieve the resampler if needed:
-        self.resampler = resampler.lock().unwrap().take();
 
         // Stop the previous output stream if it exists
         if let Some(old_stream) = self.output_stream.take() {
@@ -346,9 +397,11 @@ impl Recorder {
         }
         self.is_monitoring.store(false, Ordering::SeqCst);
 
-        // Clear the monitoring buffer
-        let mut m_buffer = self.monitoring_buffer.lock().unwrap();
-        m_buffer.clear();
+        // Clear the monitoring buffers
+        let mut m_buffers = self.monitoring_buffers.lock().unwrap();
+        for buffer in m_buffers.iter_mut() {
+            buffer.clear();
+        }
 
         println!("Monitoring stopped");
     }
