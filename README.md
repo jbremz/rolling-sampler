@@ -3,7 +3,9 @@
 > **NOTE:** This was a beginner Rust learning project so expect some pretty terrible code (as well as unwise additions from our AI friend).
 
 ## Overview
-Desktop application for sampling live audio, starting recording from a desired number of seconds in the past so you don't have to manually move back in the audio. 
+Desktop application for sampling live audio, starting recording from a desired number of seconds in the past so you don't have to manually move back in the audio.
+
+![image](assets/gui-example.png)
 
 ## Features
 - Real-time Audio Visualisation: Displays a rolling waveform of audio input.
@@ -56,6 +58,7 @@ The project relies on the following crates:
 ## TODO
 - ~Add output device choice for monitoring (kind of important 😅).~
 - the input device that is routed to the output device should be the same as the input device selected
+- monitoring stereo output still doesn't work properly
 - Improve live monitoring audio quality - seems to pop a decent amount
 - optimise and tidy code
 
