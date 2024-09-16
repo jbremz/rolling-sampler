@@ -1,5 +1,4 @@
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Instant;
 
 use chrono::Utc;
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -154,14 +153,14 @@ impl App for Recorder {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
         // Repaint the UI to update the plot
         ctx.request_repaint();
-        let start = Instant::now();
+
         while let Ok(samples) = self.audio_receiver.try_recv() {
             self.sample_buffer.add_samples(&samples);
         }
-        println!("1 print {}ms", start.elapsed().as_millis());
+
         CentralPanel::default().show(ctx, |ui| {
             ui.add_space(10.0); // Add some space at the top
-            println!("2 print {}ms", start.elapsed().as_millis());
+
             // ui.add_space(10.0); // Add some space at the top
             let panel_width = ui.available_width();
 
@@ -188,7 +187,7 @@ impl App for Recorder {
                                 );
                             }
                         });
-                    println!("3 print {}ms", start.elapsed().as_millis());
+
                     // Check if the selected device has changed
                     if current_device_index != self.current_device_index {
                         // Stop current recording
@@ -205,14 +204,11 @@ impl App for Recorder {
                         self.start_recording();
                     }
                 });
-                println!("4 print {}ms", start.elapsed().as_millis());
-                // Fetch the audio buffer samples for plotting
 
+                // Fetch the audio buffer samples for plotting
                 let plot_data = self.sample_buffer.get_audio(true);
 
-                println!("4.1 print {}ms", start.elapsed().as_millis());
                 // Set desired downsampling factor (e.g., take every 10th sample)
-
                 let downsample_factor = 10;
 
                 // Create plot points as Vec<[f64; 2]> with downsampling
@@ -222,12 +218,12 @@ impl App for Recorder {
                     .filter(|(i, _)| i % downsample_factor == 0) // Pick every Nth sample
                     .map(|(i, &sample)| [i as f64, sample as f64]) // Create [x, y] pairs
                     .collect();
-                println!("5 print {}ms", start.elapsed().as_millis());
+
                 let plot_points = PlotPoints::new(points);
-                println!("6 print {}ms", start.elapsed().as_millis());
+
                 // Create a line from the points
                 let line = Line::new(plot_points);
-                println!("7 print {}ms", start.elapsed().as_millis());
+
                 // this didn't do what I wanted it to do but I think it's something along
                 // these lines
                 let no_coordinates_formatter = CoordinatesFormatter::new(|_, _| String::new());
@@ -247,7 +243,7 @@ impl App for Recorder {
                     .show(ui, |plot_ui: &mut PlotUi| {
                         plot_ui.line(line);
                     });
-                println!("8 print {}ms", start.elapsed().as_millis());
+
                 ui.label(
                     RichText::new("Choose how much past audio to include in the recording:")
                         .italics(),
@@ -302,7 +298,6 @@ impl App for Recorder {
                 }
             });
         });
-        println!("final print {}ms", start.elapsed().as_millis());
     }
 }
 
