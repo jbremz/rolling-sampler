@@ -209,11 +209,11 @@ impl App for Recorder {
                 // Fetch the audio buffer samples for plotting
 
                 let plot_data = self.sample_buffer.get_audio(true);
+
                 println!("4.1 print {}ms", start.elapsed().as_millis());
                 // Set desired downsampling factor (e.g., take every 10th sample)
 
-                
-                let downsample_factor = plot_data.len() / 800;
+                let downsample_factor = 10;
 
                 // Create plot points as Vec<[f64; 2]> with downsampling
                 let points: Vec<[f64; 2]> = plot_data
