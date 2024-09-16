@@ -55,6 +55,7 @@ The project relies on the following crates:
 
 ## TODO
 - ~Add output device choice for monitoring (kind of important 😅).~
+- the input device that is routed to the output device should be the same as the input device selected
 - Improve live monitoring audio quality - seems to pop a decent amount
 - optimise and tidy code
 

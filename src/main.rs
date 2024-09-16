@@ -539,6 +539,12 @@ impl App for Recorder {
                                 .into();
                             // Start recording with new device
                             self.start_recording();
+                            self.stop_monitoring();
+
+                            // start monitoring again if it was previously enabled
+                            if self.is_monitoring.load(Ordering::SeqCst) {
+                                self.start_monitoring();
+                            }
                         }
                     });
 
