@@ -7,6 +7,9 @@ use egui::{CentralPanel, RichText, Vec2b};
 use egui_plot::{CoordinatesFormatter, Corner, Line, Plot, PlotPoints, PlotUi};
 use hound::{SampleFormat as HoundSampleFormat, WavSpec, WavWriter};
 use rfd::FileDialog;
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 use std::collections::VecDeque;
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +30,8 @@ struct Recorder {
     output_devices: Vec<Device>,         // Output devices (new field for audio output)
     current_output_device_index: usize,  // Store the index of the selected output device
     monitoring_buffer: Arc<Mutex<VecDeque<f32>>>,
+    resampler: Option<SincFixedIn<f32>>,
+    resample_buffer: Vec<f32>,
 }
 
 struct CircularBuffer {
@@ -86,6 +91,8 @@ impl Recorder {
             monitoring_buffer: Arc::new(Mutex::new(VecDeque::with_capacity(
                 initial_monitoring_capacity,
             ))),
+            resampler: None,
+            resample_buffer: Vec::new(),
         };
 
         recorder.start_recording();
@@ -246,20 +253,69 @@ impl Recorder {
             config.sample_rate.0, config.channels
         );
 
-        let monitoring_buffer = Arc::clone(&self.monitoring_buffer);
+        // Initialize resampler only if sample rates differ
+        let input_sample_rate = self.config.sample_rate.0 as f64;
+        let output_sample_rate = config.sample_rate.0 as f64;
 
+        if (input_sample_rate - output_sample_rate).abs() > f64::EPSILON {
+            let resampler = SincFixedIn::<f32>::new(
+                output_sample_rate / input_sample_rate, // Resampling ratio
+                2.0,                                    // Oversampling factor
+                SincInterpolationParameters {
+                    sinc_len: 256,
+                    f_cutoff: 0.95,
+                    interpolation: SincInterpolationType::Linear,
+                    oversampling_factor: 160,
+                    window: WindowFunction::BlackmanHarris2,
+                },
+                self.config.channels as usize, // Number of channels
+                4096,                          // Buffer size
+            )
+            .expect("Failed to create resampler");
+            self.resampler = Some(resampler);
+        } else {
+            self.resampler = None;
+        }
+
+        self.resample_buffer = Vec::new();
+
+        let monitoring_buffer = Arc::clone(&self.monitoring_buffer);
+        let resampler = Arc::new(Mutex::new(self.resampler.take()));
+
+        let resampler_clone = Arc::clone(&resampler);
         let output_stream = match sample_format {
             SampleFormat::F32 => {
                 output_device.build_output_stream(
                     &config,
                     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                         let mut m_buffer = monitoring_buffer.lock().unwrap();
-                        for frame in data.chunks_mut(config.channels as usize) {
-                            for sample in frame.iter_mut() {
-                                if let Some(s) = m_buffer.pop_front() {
-                                    *sample = s;
-                                } else {
-                                    *sample = 0.0; // Fill with silence if no data
+                        let mut samples: Vec<f32> = Vec::new();
+                        while let Some(sample) = m_buffer.pop_front() {
+                            samples.push(sample);
+                        }
+
+                        // Resample if necessary
+                        let resampled_samples =
+                            if let Some(mut resampler) = resampler_clone.lock().unwrap().as_mut() {
+                                let resampled = resampler
+                                    .process(&[samples], None)
+                                    .expect("Resampling failed");
+                                resampled[0].clone()
+                            } else {
+                                samples
+                            };
+
+                        // Convert mono to stereo by duplicating samples
+                        for i in 0..(data.len() / config.channels as usize) {
+                            if i < resampled_samples.len() {
+                                let sample = resampled_samples[i];
+                                for channel in 0..config.channels as usize {
+                                    data[i * config.channels as usize + channel] = sample;
+                                }
+                            } else {
+                                for channel in 0..config.channels as usize {
+                                    data[i * config.channels as usize + channel] = 0.0;
+                                    // Silence
                                 }
                             }
                         }
@@ -271,6 +327,9 @@ impl Recorder {
             _ => panic!("Unsupported sample format for monitoring"),
         }
         .unwrap();
+
+        // After the closure, you can retrieve the resampler if needed:
+        self.resampler = resampler.lock().unwrap().take();
 
         // Stop the previous output stream if it exists
         if let Some(old_stream) = self.output_stream.take() {
