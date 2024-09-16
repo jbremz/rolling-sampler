@@ -1,4 +1,7 @@
 # Rolling Sampler
+
+> **NOTE:** This was a beginner Rust learning project so expect some pretty terrible code (as well as unwise additions from our AI friend).
+
 ## Overview
 Desktop application for sampling live audio, starting recording from a desired number of seconds in the past so you don't have to manually move back in the audio. 
 
@@ -12,11 +15,6 @@ Desktop application for sampling live audio, starting recording from a desired n
 ## Prerequisites
 Before running this application, ensure you have the following installed:
 - Rust (latest stable version)
-- cpal for audio input/output.
-- eframe and egui for the graphical user interface.
-- hound for writing .wav files.
-- rfd for native file dialogs.
-- chrono for timestamps in file naming.
 
 ## Usage
 1. Clone the repository:
@@ -56,7 +54,9 @@ The project relies on the following crates:
 - dirs: For determining the default save path (Desktop).
 
 ## TODO
-- Add output device choice for monitoring (kind of important 😅).
+- ~Add output device choice for monitoring (kind of important 😅).~
+- Improve live monitoring audio quality - seems to pop a decent amount
+- optimise and tidy code
 
 ## License
 This project is licensed under the MIT License - see the LICENSE file for details.
