@@ -1,6 +1,6 @@
 use chrono::Utc;
 use cpal::traits::{DeviceTrait, HostTrait};
-use cpal::{Device, SampleFormat, StreamConfig};
+use cpal::{BufferSize, Device, SampleFormat, StreamConfig};
 use dirs::home_dir;
 use eframe::{run_native, App, CreationContext};
 use egui::{CentralPanel, RichText, Vec2b};
@@ -126,6 +126,9 @@ impl Recorder {
 
         self.reset_buffer(); // Reset the buffer before starting a new recording
         let sample_buffer = Arc::clone(&self.sample_buffer);
+
+        // Reinitialize monitoring buffers
+        self.reset_monitoring_buffers();
 
         let is_monitoring = Arc::clone(&self.is_monitoring);
         let num_channels = self.config.channels as usize;
@@ -258,6 +261,11 @@ impl Recorder {
         let config = output_device.default_output_config().unwrap();
         let sample_format = config.sample_format();
         let config: StreamConfig = config.into();
+        let output_config = StreamConfig {
+            channels: config.channels,
+            sample_rate: config.sample_rate,
+            buffer_size: BufferSize::Fixed(2048), // Adjust this value as needed
+        };
 
         println!(
             "Output Stream Config - Sample Rate: {}, Channels: {}",
@@ -276,10 +284,10 @@ impl Recorder {
                 output_sample_rate / input_sample_rate, // Resampling ratio
                 2.0,                                    // Oversampling factor
                 SincInterpolationParameters {
-                    sinc_len: 256,
+                    sinc_len: 256, // Increased from default
                     f_cutoff: 0.95,
                     interpolation: SincInterpolationType::Linear,
-                    oversampling_factor: 160,
+                    oversampling_factor: 256, // Increased from default
                     window: WindowFunction::BlackmanHarris2,
                 },
                 4096,               // Chunk size
@@ -300,7 +308,7 @@ impl Recorder {
         let output_stream = match sample_format {
             SampleFormat::F32 => {
                 output_device.build_output_stream(
-                    &config,
+                    &output_config,
                     move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                         let mut m_buffers = monitoring_buffers.lock().unwrap();
                         let mut samples_per_channel: Vec<Vec<f32>> =
@@ -404,6 +412,17 @@ impl Recorder {
         }
 
         println!("Monitoring stopped");
+    }
+    fn reset_monitoring_buffers(&mut self) {
+        let num_channels = self.config.channels as usize;
+        let initial_monitoring_capacity = self.config.sample_rate.0 as usize * 4; // Example: 4 second buffer
+        self.monitoring_buffers = Arc::new(Mutex::new(vec![
+            VecDeque::with_capacity(
+                initial_monitoring_capacity
+            );
+            num_channels
+        ]));
+        self.resample_buffers = vec![Vec::new(); num_channels];
     }
 }
 
@@ -633,7 +652,6 @@ impl App for Recorder {
                             &mut new_buffer_size_seconds,
                             1.0..=max_buffer_seconds,
                         ));
-                        // .text("Buffer Size (s)"));
 
                         let new_buffer_size =
                             (new_buffer_size_seconds * self.config.sample_rate.0 as f32) as usize;

@@ -36,6 +36,7 @@ This will launch the GUI, where you can start interacting with the application.
 
 ## How to Use
 1. Select Input Device: Use the dropdown menu to select your desired input device (e.g., microphone).
+1. Select Output Device: if you want to do live monitoring you can select that here too.
 2. Adjust Buffer Size: The slider allows you to change how much past audio is stored before saving (in seconds).
 3. Start/Stop Recording: Click "Start Grab" to begin capturing audio. Click "Stop Grab" to stop and save the recording.
 4. Select Save Folder: You can choose where the .wav files will be saved using the "Select Save Folder" button.
