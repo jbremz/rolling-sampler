@@ -57,10 +57,12 @@ The project relies on the following crates:
 
 ## TODO
 - ~Add output device choice for monitoring (kind of important 😅).~
-- the input device that is routed to the output device should be the same as the input device selected
-- monitoring stereo output still doesn't work properly
+- ~the input device that is routed to the output device should be the same as the input device selected~
+- ~monitoring stereo output still doesn't work properly~
+- the resampling for live monitoring doesn't seem to work
 - Improve live monitoring audio quality - seems to pop a decent amount
 - optimise and tidy code
+- I tried to bundle it into a macos app but I couldn't get it to request the appropiate permissions
 
 ## License
 This project is licensed under the MIT License - see the LICENSE file for details.

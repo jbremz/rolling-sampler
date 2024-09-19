@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 chrono = "0.4.38"
+cocoa = "0.26.0"
 cpal = "0.15.3"
 dirs = "5.0.1"
 eframe = "0.28.1"
@@ -13,6 +14,7 @@ egui-winit = "0.28.1"
 egui_plot = "0.28.1"
 ferris-says = "0.3.1"
 hound = "3.5.1"
+objc = "0.2.7"
 rfd = "0.14.1"
 rubato = "0.15.0"
 winit = "0.30.5"
@@ -25,7 +27,8 @@ icon = ["assets/rolling-sampler.icns"]
 
 [bundle.macos]
 minimum_system_version = "10.13" # Minimum macOS version required
-use_vendored_libs = false # Optional: If you are shipping bundled libraries
+use_vendored_libs = false
 out_dir = "target/bundle/macos"
-hardened_runtime = true
+hardened_runtime = false
 signing_identity = "Developer ID Application: Jim Bremner"
+info_plist = "Info.plist"
