@@ -16,3 +16,16 @@ hound = "3.5.1"
 rfd = "0.14.1"
 rubato = "0.15.0"
 winit = "0.30.5"
+
+[package.metadata.bundle]
+name = "RollingSampler"
+identifier = "com.yourdomain.RollingSampler"
+version = "0.1.0"
+icon = ["assets/rolling-sampler.icns"]
+
+[bundle.macos]
+minimum_system_version = "10.13" # Minimum macOS version required
+use_vendored_libs = false # Optional: If you are shipping bundled libraries
+out_dir = "target/bundle/macos"
+hardened_runtime = true
+signing_identity = "Developer ID Application: Jim Bremner"
