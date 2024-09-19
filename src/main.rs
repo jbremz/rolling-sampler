@@ -366,7 +366,16 @@ impl Recorder {
 
                         for frame_idx in 0..num_frames {
                             for channel in 0..num_output_channels {
-                                if channel < resampled_samples_per_channel.len() {
+                                if num_input_channels == 1 {
+                                    // Mono input, duplicate the sample for both output channels
+                                    let mono_sample =
+                                        if frame_idx < resampled_samples_per_channel[0].len() {
+                                            resampled_samples_per_channel[0][frame_idx]
+                                        } else {
+                                            0.0 // If out of bounds, fill with silence
+                                        };
+                                    data[frame_idx * num_output_channels + channel] = mono_sample;
+                                } else if channel < resampled_samples_per_channel.len() {
                                     let channel_samples = &resampled_samples_per_channel[channel];
                                     if frame_idx < channel_samples.len() {
                                         data[frame_idx * num_output_channels + channel] =
