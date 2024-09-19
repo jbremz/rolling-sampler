@@ -269,13 +269,8 @@ impl Recorder {
         let output_config = StreamConfig {
             channels: config.channels,
             sample_rate: config.sample_rate,
-            buffer_size: BufferSize::Fixed(2048), // Adjust this value as needed
+            buffer_size: BufferSize::Fixed(512), // Adjust this value as needed
         };
-
-        println!(
-            "Output Stream Config - Sample Rate: {}, Channels: {}",
-            config.sample_rate.0, config.channels
-        );
 
         let num_output_channels = config.channels as usize;
         let num_input_channels = self.config.channels as usize;
@@ -284,10 +279,20 @@ impl Recorder {
         let input_sample_rate = self.config.sample_rate.0 as f64;
         let output_sample_rate = config.sample_rate.0 as f64;
 
+        println!(
+            "Output Stream Config - Sample Rate: {}, Channels: {}",
+            output_sample_rate, config.channels
+        );
+
         if (input_sample_rate - output_sample_rate).abs() > f64::EPSILON {
+            // print resampler ratio
+            println!(
+                "Resampling ratio: {}",
+                output_sample_rate / input_sample_rate
+            );
             let resampler = SincFixedIn::<f32>::new(
                 output_sample_rate / input_sample_rate, // Resampling ratio
-                2.0,                                    // Oversampling factor
+                2.0,
                 SincInterpolationParameters {
                     sinc_len: 256, // Increased from default
                     f_cutoff: 0.95,
