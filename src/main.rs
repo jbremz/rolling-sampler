@@ -32,6 +32,7 @@ struct Recorder {
     monitoring_buffers: Arc<Mutex<Vec<VecDeque<f32>>>>, // One VecDeque per channel
     resampler: Option<SincFixedIn<f32>>,
     resample_buffers: Vec<Vec<f32>>, // One buffer per channel for resampled data
+    new_data_available: Arc<AtomicBool>,
 }
 
 struct CircularBuffer {
@@ -101,6 +102,7 @@ impl Recorder {
             monitoring_buffers,
             resampler: None,
             resample_buffers,
+            new_data_available: Arc::new(AtomicBool::new(false)),
         };
 
         recorder.start_recording();
@@ -133,6 +135,7 @@ impl Recorder {
         let is_monitoring = Arc::clone(&self.is_monitoring);
         let num_channels = self.config.channels as usize;
         let monitoring_buffers = Arc::clone(&self.monitoring_buffers);
+        let new_data_available = Arc::clone(&self.new_data_available); // Clone the Arc for thread safety
 
         let stream = match sample_format {
             SampleFormat::F32 => {
@@ -144,6 +147,8 @@ impl Recorder {
                             let mut buffer = sample_buffer.lock().unwrap();
                             buffer.add_samples(data);
                         }
+
+                        new_data_available.store(true, Ordering::SeqCst);
 
                         // If monitoring is enabled, distribute samples to per-channel buffers
                         if is_monitoring.load(Ordering::SeqCst) {
@@ -503,7 +508,7 @@ impl CircularBuffer {
 impl App for Recorder {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
         // Repaint the UI to update the plot
-        ctx.request_repaint();
+        ctx.request_repaint_after(std::time::Duration::from_millis(33));
 
         CentralPanel::default().show(ctx, |ui| {
             ui.add_space(10.0); // Add some space at the top
@@ -604,45 +609,41 @@ impl App for Recorder {
                         }
                     });
 
-                    // Fetch the audio buffer samples for plotting
-                    if let Ok(buffer) = self.sample_buffer.lock() {
-                        let plot_data = buffer.get_samples_for_plot();
+                    // Plot the waveform
+                    if self.new_data_available.swap(false, Ordering::SeqCst) {
+                        // New data is available, so update the plot
+                        if let Ok(buffer) = self.sample_buffer.lock() {
+                            let plot_data = buffer.get_samples_for_plot(); // Fetch up to 10,000 samples
+                            let downsample_factor = 10; // Adjust as needed
+                            let points: Vec<[f64; 2]> = plot_data
+                                .iter()
+                                .enumerate()
+                                .filter(|(i, _)| i % downsample_factor == 0)
+                                .map(|(i, &sample)| [i as f64, sample as f64])
+                                .collect();
 
-                        // Set desired downsampling factor (e.g., take every 10th sample)
-                        let downsample_factor = 10;
+                            let plot_points = PlotPoints::new(points);
+                            let line = Line::new(plot_points);
 
-                        // Create plot points as Vec<[f64; 2]> with downsampling
-                        let points: Vec<[f64; 2]> = plot_data
-                            .iter()
-                            .enumerate()
-                            .filter(|(i, _)| i % downsample_factor == 0) // Pick every Nth sample
-                            .map(|(i, &sample)| [i as f64, sample as f64]) // Create [x, y] pairs
-                            .collect();
-
-                        let plot_points = PlotPoints::new(points);
-
-                        // Create a line from the points
-                        let line = Line::new(plot_points);
-
-                        // this didn't do what I wanted it to do but I think it's something along these lines
-                        let no_coordinates_formatter =
-                            CoordinatesFormatter::new(|_, _| String::new());
-
-                        // Display the plot
-                        Plot::new("Rolling Waveform Plot")
-                            .view_aspect(4.0) // Adjust aspect ratio if necessary
-                            .auto_bounds(Vec2b::new(true, false)) // Disable auto bounds for y-axis, keep x-axis auto-bounds
-                            .show_axes(false)
-                            .show_grid(false)
-                            .show_background(false)
-                            .allow_zoom(false)
-                            .allow_drag(false)
-                            .allow_scroll(false)
-                            .sharp_grid_lines(true)
-                            .coordinates_formatter(Corner::LeftBottom, no_coordinates_formatter) // Disable coordinates display
-                            .show(ui, |plot_ui: &mut PlotUi| {
-                                plot_ui.line(line);
-                            });
+                            // Plot the waveform as before
+                            Plot::new("Rolling Waveform Plot")
+                                .view_aspect(4.0)
+                                .auto_bounds(Vec2b::new(true, false))
+                                .show_axes(false)
+                                .show_grid(false)
+                                .show_background(false)
+                                .allow_zoom(false)
+                                .allow_drag(false)
+                                .allow_scroll(false)
+                                .sharp_grid_lines(true)
+                                .coordinates_formatter(
+                                    Corner::LeftBottom,
+                                    CoordinatesFormatter::new(|_, _| String::new()),
+                                )
+                                .show(ui, |plot_ui: &mut PlotUi| {
+                                    plot_ui.line(line);
+                                });
+                        }
                     }
 
                     ui.label(

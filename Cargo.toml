@@ -16,3 +16,6 @@ hound = "3.5.1"
 rfd = "0.14.1"
 rubato = "0.15.0"
 winit = "0.30.5"
+
+[profile.release]
+debug = true
